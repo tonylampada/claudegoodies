@@ -35,6 +35,6 @@ trap release_lock EXIT INT TERM
 acquire_lock
 
 # Speak the message
-say -v "Fernanda (Enhanced)" "$1"
+say -v "Fernanda (Enhanced)" -r 190 "$1"
 
 # Lock will be released automatically by trap

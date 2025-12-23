@@ -35,6 +35,6 @@ trap release_lock EXIT INT TERM
 acquire_lock
 
 # Speak the message
-say -v "Zoe (Premium)" "$1"
+say -v "Zoe (Premium)" -r 180 "$1"
 
 # Lock will be released automatically by trap
