@@ -2,6 +2,10 @@
 
 A collection of Claude skills and plugins designed to enhance productivity and interaction.
 
+Here's how to install:
+
+[![Watch the video](https://cdn.loom.com/sessions/thumbnails/557242c82101437db9fd5d50b7ddfd12-eaa406b43bfdd226.gif)](https://www.loom.com/share/557242c82101437db9fd5d50b7ddfd12)
+
 ## Included Skills
 
 ### 🔍 [PR Review](./skills/pr-review)
