@@ -14,15 +14,5 @@ Enables dual-modality communication by combining voice and text responses. It us
 
 demo - [video](https://www.loom.com/share/e4a9f544efd04fedb208311b66104fda)
 
-
-## Project Structure
-
-- `skills/`: Contains the source code and documentation for each individual skill.
-  - `pr-review/`: Pull Request review automation logic and guidelines.
-  - `tts/`: Text-to-speech scripts and workflow.
-- `.claude-plugin/`: Configuration for the Claude plugin marketplace.
-
-## Metadata
-
-See [.claude-plugin/marketplace.json](.claude-plugin/marketplace.json) for plugin definitions and source mapping.
-
+Note: make sure you download the `Zoe (Premium)` voice for your mac.
+<img width="1464" height="1840" alt="CleanShot 2025-12-23 at 17 43 37@2x" src="https://github.com/user-attachments/assets/d41afbe8-a90a-4553-9f16-60eeb7bc2156" />
