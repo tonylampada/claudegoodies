@@ -2,9 +2,7 @@
 
 A collection of Claude skills and plugins designed to enhance productivity and interaction.
 
-Here's how to install:
-
-[![Watch the video](https://cdn.loom.com/sessions/thumbnails/557242c82101437db9fd5d50b7ddfd12-eaa406b43bfdd226.gif)](https://www.loom.com/share/557242c82101437db9fd5d50b7ddfd12)
+How to install - [video](https://www.loom.com/share/557242c82101437db9fd5d50b7ddfd12)
 
 ## Included Skills
 
@@ -13,6 +11,9 @@ Conduct expert-level pull request reviews using the `gh` CLI and a local working
 
 ### 🎙️ [TTS (Text-to-Speech)](./skills/tts)
 Enables dual-modality communication by combining voice and text responses. It uses the macOS `say` command to deliver concise, witty spoken responses while providing detailed written information.
+
+demo - [video](https://www.loom.com/share/e4a9f544efd04fedb208311b66104fda)
+
 
 ## Project Structure
 
