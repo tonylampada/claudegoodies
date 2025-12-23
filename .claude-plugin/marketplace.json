@@ -10,14 +10,14 @@
     "plugins": [
       {
         "name": "pr-review",
-        "source": "./",
+        "source": "./pr-review",
         "description": "Conduct thorough pull request reviews using gh CLI and local git repository. Use when the user asks to 'review a PR', 'check pull request', or references a GitHub PR number. Provides concise, high-quality reviews focused on code quality, bug prevention, and architectural improvements following three-layer architecture principles.",
         "strict": false,
         "skills": ["./skills/pr-review"]
       },
       {
         "name": "tts",
-        "source": "./",
+        "source": "./tts",
         "description": "Provide dual-modality communication using macOS say command for text-to-speech alongside detailed text responses. Use this skill for all user interactions to deliver concise spoken responses in English or Portuguese while providing comprehensive written information.",
         "strict": false,
         "skills": ["./skills/tts"]
