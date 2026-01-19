@@ -12,7 +12,7 @@ Conduct expert-level pull request reviews using the `gh` CLI and a local working
 ### 🎙️ [TTS (Text-to-Speech)](./skills/tts)
 Enables dual-modality communication by combining voice and text responses. It uses the macOS `say` command to deliver concise, witty spoken responses while providing detailed written information.
 
-demo - [video](https://www.loom.com/share/e4a9f544efd04fedb208311b66104fda)
+demo - [video]([https://www.loom.com/share/e4a9f544efd04fedb208311b66104fda](https://www.loom.com/share/c42ce851904f45f3b2d40ee7f84dd4d1))
 
-Note: make sure you download the `Zoe (Premium)` voice for your mac.
-<img width="1464" height="1840" alt="CleanShot 2025-12-23 at 17 43 37@2x" src="https://github.com/user-attachments/assets/d41afbe8-a90a-4553-9f16-60eeb7bc2156" />
+* hook configuration - [settings.json](https://gist.github.com/tonylampada/9d3c52d108f9939c001047e425395f6b)
+* hook script - [notification.sh](https://gist.github.com/tonylampada/df613200d70272ae87b3276a008548ff)
