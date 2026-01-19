@@ -1,12 +1,27 @@
 #!/bin/bash
-# Portuguese TTS using macOS say command with Fernanda (Enhanced) voice
+# Portuguese TTS using macOS say command with configurable voice
+
+# Default voice
+VOICE="Fernanda (Enhanced)"
+RATE=190
+
+# Parse arguments
+while getopts "v:r:" opt; do
+    case $opt in
+        v) VOICE="$OPTARG";;
+        r) RATE="$OPTARG";;
+        \?) echo "Usage: $0 [-v voice] [-r rate] <text-to-speak>"; exit 1;;
+    esac
+done
+shift $((OPTIND-1))
 
 if [ -z "$1" ]; then
-    echo "Usage: $0 <text-to-speak>"
+    echo "Usage: $0 [-v voice] [-r rate] <text-to-speak>"
+    echo "  -v voice  Voice name (default: 'Fernanda (Enhanced)')"
+    echo "  -r rate   Speech rate (default: 190)"
     exit 1
 fi
 
-LOCKFILE="/tmp/tts_say.lock"
 LOCKDIR="/tmp/tts_say.lock.d"
 TIMEOUT=600  # 60 seconds (600 * 0.1s)
 
@@ -35,6 +50,6 @@ trap release_lock EXIT INT TERM
 acquire_lock
 
 # Speak the message
-say -v "Fernanda (Enhanced)" -r 190 "$1"
+say -v "$VOICE" -r "$RATE" "$1"
 
 # Lock will be released automatically by trap
