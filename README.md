@@ -2,9 +2,7 @@
 
 A collection of Claude skills and plugins designed to enhance productivity and interaction.
 
-Here's how to install:
-
-[![Watch the video](https://cdn.loom.com/sessions/thumbnails/557242c82101437db9fd5d50b7ddfd12-eaa406b43bfdd226.gif)](https://www.loom.com/share/557242c82101437db9fd5d50b7ddfd12)
+How to install - [video](https://www.loom.com/share/557242c82101437db9fd5d50b7ddfd12)
 
 ## Included Skills
 
@@ -14,14 +12,7 @@ Conduct expert-level pull request reviews using the `gh` CLI and a local working
 ### 🎙️ [TTS (Text-to-Speech)](./skills/tts)
 Enables dual-modality communication by combining voice and text responses. It uses the macOS `say` command to deliver concise, witty spoken responses while providing detailed written information.
 
-## Project Structure
+demo - [video]([https://www.loom.com/share/e4a9f544efd04fedb208311b66104fda](https://www.loom.com/share/c42ce851904f45f3b2d40ee7f84dd4d1))
 
-- `skills/`: Contains the source code and documentation for each individual skill.
-  - `pr-review/`: Pull Request review automation logic and guidelines.
-  - `tts/`: Text-to-speech scripts and workflow.
-- `.claude-plugin/`: Configuration for the Claude plugin marketplace.
-
-## Metadata
-
-See [.claude-plugin/marketplace.json](.claude-plugin/marketplace.json) for plugin definitions and source mapping.
-
+* hook configuration - [settings.json](https://gist.github.com/tonylampada/9d3c52d108f9939c001047e425395f6b)
+* hook script - [notification.sh](https://gist.github.com/tonylampada/df613200d70272ae87b3276a008548ff)
