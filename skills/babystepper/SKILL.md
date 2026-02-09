@@ -1,3 +1,8 @@
+---
+name: babystepper
+description: "Break down large objectives into small, incremental PRs while respecting human review bandwidth. Use when the user wants to: (1) Break down a large refactoring or feature into manageable PRs, (2) Track progress on a multi-PR initiative, (3) Automate PR creation while limiting open PRs to avoid overwhelming reviewers, (4) Pursue open-ended goals that evolve as work progresses. Triggers: /babystepper, 'baby step this', 'incremental PRs', 'break this into small PRs'"
+---
+
 # Baby Stepper
 
 Execute long-term objectives through small, incremental PRs while respecting human review bandwidth.
