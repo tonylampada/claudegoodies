@@ -7,6 +7,8 @@ description: "Break down large objectives into small, incremental PRs while resp
 
 Execute long-term objectives through small, incremental PRs while respecting human review bandwidth.
 
+**NEVER merge PRs.** Merging is a human-only action. Only update status to `done` when a PR is already merged (i.e., `state: MERGED`). Do not run `gh pr merge` under any circumstances.
+
 ## Quick Reference
 
 | Command | Description |
@@ -77,17 +79,12 @@ Creates a GitHub issue as "mission control" for the objective.
    - Maximize parallelism where possible
    - Mark independent steps to enable batch creation
 
-4. **Ensure Label Exists**
+4. **Create the Tracking Issue**
+   Write the state JSON to a temp file and use the create script:
    ```bash
-   gh label create "👶 babystepper" --description "Tracked by Baby Stepper skill" --color "7057ff" 2>/dev/null || true
+   scripts/create-issue.sh /tmp/babystepper-plan.json
    ```
-
-5. **Create the Tracking Issue**
-   ```bash
-   gh issue create --title "🚀 [BabyStepper] objective_title" \
-     --body "$(cat issue_body.md)" \
-     --label "👶 babystepper"
-   ```
+   The script handles label creation, body generation, and issue creation.
 
 ### Writing the Issue Description
 
@@ -184,9 +181,9 @@ subagents.
    ```bash
    gh pr view <pr_number> --json state,mergedAt,reviewDecision,reviews,statusCheckRollup
    ```
-   - If `state: MERGED` → update status to `done`
-   - If `state: CLOSED` (not merged) → update status to `blocked`, add note
-   - If `state: OPEN` → classify the PR's health (see step 4)
+   - If `state: MERGED` → `scripts/update-step.sh <issue> <step_id> done`
+   - If `state: CLOSED` (not merged) → `scripts/update-step.sh <issue> <step_id> blocked --note "reason"`
+   - If `state: OPEN` → classify the PR's health (see step 4). **Do NOT merge the PR** — even if approved and green. Merging is always a human action.
 
 4. **Fix Open PRs First** ⚡ *Stop starting, start finishing*
 
@@ -209,7 +206,7 @@ subagents.
    - Fix the issue, commit, and push
    - After each fix subagent completes, return to base branch (`git checkout master && git pull`) before starting the next
 
-   PRs that are green and just awaiting review → no action needed, skip them.
+   PRs that are green (whether awaiting review or already approved) → no action needed, skip them. Never merge.
 
 5. **Discovery Phase** (for open-ended objectives)
    After updating PR statuses, look for new work:
@@ -217,16 +214,11 @@ subagents.
    a. **Review completed work** - What did the merged PRs reveal?
    b. **Check for new issues** - Errors, warnings, test failures?
    c. **Explore adjacent areas** - What's next logically?
-   d. **Add new steps** - Append to the plan with appropriate dependencies
-
-   Log discoveries:
-   ```json
-   {
-     "discovered_at": "2026-02-04",
-     "trigger": "Merged PR #5 revealed unhandled edge case",
-     "steps_added": [7, 8]
-   }
+   d. **Add new steps** using the script:
+   ```bash
+   scripts/add-step.sh <issue_number> "Step title" --depends-on 1,2 --note "Why this was discovered"
    ```
+   The script auto-assigns the next ID, sets `discovered_at`, and adds a discovery log entry.
 
 6. **Find Eligible Steps**
    A step is eligible when:
@@ -248,15 +240,13 @@ subagents.
      tell the subagent to read the command file (`.claude/commands/<name>.md`) and follow its template
    - Add step-specific notes only when scope clarification is needed
 
-   After each subagent finishes: update step status → `in_progress`, pr → PR number
-
-8. **Update Tracking Issue**
+   After each subagent finishes, immediately update the tracking issue:
    ```bash
-   scripts/update-issue.sh <issue_number> '<new_state_json>'
+   scripts/update-step.sh <issue_number> <step_id> in_progress <pr_number>
    ```
-   This regenerates both the human-readable table and the JSON comment.
+   Then return to base branch before starting the next subagent.
 
-9. **Report Status**
+8. **Report Status**
    - Summarize what was done
    - List PRs fixed and what was wrong
    - List new PRs created
@@ -503,5 +493,8 @@ Claude: [Updates objective_status to "complete"]
 - `references/planning-guide.md` - How to break down objectives
 - `references/pr-strategy.md` - Guidelines for PR sizing and content
 - `references/subagent-prompt.md` - Template for constructing subagent prompts
+- `scripts/create-issue.sh` - Create tracking issue from a state JSON file
 - `scripts/parse-issue.sh` - Extract state JSON from issue body
-- `scripts/update-issue.sh` - Update issue with new state
+- `scripts/update-issue.sh` - Regenerate issue body from full state JSON (low-level, used by other scripts)
+- `scripts/update-step.sh` - Update a single step's status/PR (fetches, modifies, writes back)
+- `scripts/add-step.sh` - Add a new step to the plan (fetches, appends, writes back)

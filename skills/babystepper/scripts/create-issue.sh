@@ -1,23 +1,26 @@
 #!/bin/bash
-# update-issue.sh - Update GitHub issue with new babystepper state
+# create-issue.sh - Create a new babystepper tracking issue from a state JSON file
 #
-# Usage: update-issue.sh <issue_number> '<state_json>' [--repo owner/repo]
+# Usage: create-issue.sh <state_json_file> [--repo owner/repo]
 #
-# This script:
-# 1. Takes the new state JSON (v1 or v2)
-# 2. Generates the human-readable markdown table
-# 3. Updates the issue body with both table and JSON comment
+# The state JSON file should contain the full babystepper state (version 2).
+# If --repo is not provided, uses the current repo.
+#
+# Example:
+#   create-issue.sh plan.json
+#   create-issue.sh plan.json --repo roboflow/roboflow
 
 set -euo pipefail
 
-if [ $# -lt 2 ]; then
-    echo "Usage: update-issue.sh <issue_number> '<state_json>' [--repo owner/repo]"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ $# -lt 1 ]; then
+    echo "Usage: create-issue.sh <state_json_file> [--repo owner/repo]"
     exit 1
 fi
 
-ISSUE_NUMBER="$1"
-STATE_JSON="$2"
-shift 2
+STATE_FILE="$1"
+shift
 
 # Parse optional args
 REPO_FLAG=""
@@ -28,18 +31,40 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         *)
-            shift
+            echo "Error: Unknown option '$1'"
+            exit 1
             ;;
     esac
 done
 
-# Parse the state using jq
-VERSION=$(echo "$STATE_JSON" | jq -r '.version // 1')
-TITLE=$(echo "$STATE_JSON" | jq -r '.title // "Objective"')
-DESCRIPTION=$(echo "$STATE_JSON" | jq -r '.description // ""')
-MAX_OPEN_PRS=$(echo "$STATE_JSON" | jq -r '.config.max_open_prs // 5')
+# Read and validate state JSON
+if [ ! -f "$STATE_FILE" ]; then
+    echo "Error: File '$STATE_FILE' not found"
+    exit 1
+fi
 
-# v2 fields
+STATE_JSON=$(cat "$STATE_FILE")
+
+# Validate required fields
+TITLE=$(echo "$STATE_JSON" | jq -r '.title // empty')
+if [ -z "$TITLE" ]; then
+    echo "Error: State JSON must have a 'title' field"
+    exit 1
+fi
+
+STEPS_COUNT=$(echo "$STATE_JSON" | jq '.steps | length')
+if [ "$STEPS_COUNT" -eq 0 ]; then
+    echo "Error: State JSON must have at least one step"
+    exit 1
+fi
+
+# Ensure label exists
+gh label create "👶 babystepper" --description "Tracked by Baby Stepper skill" --color "7057ff" $REPO_FLAG 2>/dev/null || true
+
+# Generate the issue body using update-issue.sh's logic
+# We create a temp issue first, then update it with the proper body
+VERSION=$(echo "$STATE_JSON" | jq -r '.version // 2')
+DESCRIPTION=$(echo "$STATE_JSON" | jq -r '.description // ""')
 OBJECTIVE_TYPE=$(echo "$STATE_JSON" | jq -r '.objective_type // "bounded"')
 OBJECTIVE_STATUS=$(echo "$STATE_JSON" | jq -r '.objective_status // "active"')
 
@@ -68,8 +93,7 @@ else
 fi
 
 # Build the issue body
-BODY=$(cat <<EOF
-# 🚀 Objective: ${TITLE}
+BODY="# 🚀 Objective: ${TITLE}
 
 ${DESCRIPTION}
 
@@ -79,9 +103,7 @@ ${TYPE_INDICATOR}
 
 | # | Step | Depends On | Status | PR |
 |---|------|------------|--------|-----|
-${TABLE_ROWS}
-EOF
-)
+${TABLE_ROWS}"
 
 # Add horizon row for open-ended objectives
 if [ "$OBJECTIVE_TYPE" = "open-ended" ] && [ "$OBJECTIVE_STATUS" = "active" ]; then
@@ -109,16 +131,10 @@ if [ "$OBJECTIVE_TYPE" = "open-ended" ]; then
     if [ "$OBJECTIVE_STATUS" = "active" ]; then
         BODY="${BODY}
 🔮 Horizon: Open (more steps may emerge)"
-    elif [ "$OBJECTIVE_STATUS" = "complete" ]; then
-        BODY="${BODY}
-✅ Objective: Complete"
-    elif [ "$OBJECTIVE_STATUS" = "paused" ]; then
-        BODY="${BODY}
-⏸️ Objective: Paused"
     fi
 fi
 
-# Add discovery log for v2/open-ended
+# Add discovery log
 if [ "$VERSION" = "2" ]; then
     DISCOVERY_LOG=$(echo "$STATE_JSON" | jq -r '
         if .discovery_log and (.discovery_log | length > 0) then
@@ -139,11 +155,12 @@ BODY="${BODY}
 ${STATE_JSON}
 -->"
 
-# Update the issue
-gh issue edit "$ISSUE_NUMBER" --body "$BODY" $REPO_FLAG
+# Create the issue
+ISSUE_URL=$(gh issue create \
+    --title "🚀 [BabyStepper] ${TITLE}" \
+    --body "$BODY" \
+    --label "👶 babystepper" \
+    $REPO_FLAG)
 
-echo "Updated issue #${ISSUE_NUMBER}"
-echo "Progress: ${DONE}/${TOTAL} done, ${IN_PROGRESS} in progress, ${PENDING} pending"
-if [ "$OBJECTIVE_TYPE" = "open-ended" ]; then
-    echo "Type: Open-ended (${OBJECTIVE_STATUS})"
-fi
+echo "$ISSUE_URL"
+echo "Created issue with ${TOTAL} steps"
