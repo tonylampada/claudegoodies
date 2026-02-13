@@ -100,7 +100,13 @@ You are implementing Step {STEP_ID} of a baby-stepper plan.
 
 5. Create the PR:{PR_INSTRUCTIONS}
 
-6. Report the PR URL when done.
+6. Report back with:
+   - The PR URL
+   - A brief summary of the fix/change
+   - **Related items:** If during investigation you discover other items (error groups, files,
+     endpoints, etc.) that share the same root cause and are effectively addressed by this change,
+     list them explicitly. Example: "Also addresses: GROUP_ID XYZ (same root cause, HTTP wrapper
+     for this error)". This prevents future steps from duplicating work.
 ```
 
 ## PR Instructions Block
@@ -149,3 +155,4 @@ Use the default template from `references/pr-strategy.md`:
 - **Add step-specific hints only when needed.** If a step has a non-obvious requirement (e.g., "only migrate rename calls, not other fetch calls in the same file"), add it as a note.
 - **Fix before new.** Always process all fix subagents before launching any new step subagents.
 - **One at a time.** Never launch subagents in parallel. Wait for each to finish before starting the next — they share the git working directory.
+- **Accumulate context between subagents.** After each subagent finishes, extract any "related items" or "also addresses" from its report. Maintain a cumulative list of addressed items across the session. Pass this list to each subsequent subagent as additional exclusion context. This prevents later subagents from duplicating work that an earlier subagent already covered as a side effect.

@@ -240,9 +240,25 @@ subagents.
      tell the subagent to read the command file (`.claude/commands/<name>.md`) and follow its template
    - Add step-specific notes only when scope clarification is needed
 
+   **Accumulate context between subagents:**
+   - Maintain a cumulative list of "also addressed" items across the session (e.g., related error
+     group IDs, files already fixed, endpoints already handled)
+   - After each subagent finishes, extract any "related items" or "also addresses" from its report
+     and add them to the cumulative list
+   - When constructing the prompt for the next subagent, include this cumulative list as additional
+     exclusion context (e.g., "These items are already addressed by previous steps: [list]")
+   - This prevents later subagents from picking up work that was already covered as a side effect
+     of an earlier step
+
    After each subagent finishes, immediately update the tracking issue:
+   - **Rename the step** with a descriptive title based on what the subagent actually did.
+     Generic titles like "Find and fix next error" become meaningless once work is done —
+     replace them with specific summaries (e.g., "Fix null-access in segmentImageHandler").
+   - Record "also addresses" items if the subagent reported any.
    ```bash
-   scripts/update-step.sh <issue_number> <step_id> in_progress <pr_number>
+   scripts/update-step.sh <issue_number> <step_id> in_progress <pr_number> \
+     --title "Descriptive title of what was actually done" \
+     --note "Also addresses: [items]"
    ```
    Then return to base branch before starting the next subagent.
 
@@ -292,6 +308,7 @@ subagents.
       "status": "pending|in_progress|done|blocked",
       "pr": null | 123,
       "notes": "optional notes",
+      "also_addresses": ["optional list of related items covered by this step"],
       "discovered_at": null | "2026-02-04"
     }
   ],

@@ -1,12 +1,13 @@
 #!/bin/bash
 # update-step.sh - Update a single step's status and/or PR number
 #
-# Usage: update-step.sh <issue_number> <step_id> <status> [pr_number] [--note "text"] [--repo owner/repo]
+# Usage: update-step.sh <issue_number> <step_id> <status> [pr_number] [--note "text"] [--title "text"] [--repo owner/repo]
 #
 # Examples:
 #   update-step.sh 9701 3 in_progress 9750
 #   update-step.sh 9701 6 blocked --note "PR closed - could not test"
 #   update-step.sh 9701 1 done
+#   update-step.sh 9701 3 in_progress 9750 --title "Fix null-access in segmentImageHandler"
 #   update-step.sh 6 1 in_progress 42 --repo tonylampada/babystepper-test
 
 set -euo pipefail
@@ -14,7 +15,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ $# -lt 3 ]; then
-    echo "Usage: update-step.sh <issue_number> <step_id> <status> [pr_number] [--note \"text\"] [--repo owner/repo]"
+    echo "Usage: update-step.sh <issue_number> <step_id> <status> [pr_number] [--note \"text\"] [--title \"text\"] [--repo owner/repo]"
     echo ""
     echo "Statuses: pending, in_progress, done, blocked"
     echo ""
@@ -33,11 +34,16 @@ shift 3
 # Parse optional args
 PR_NUMBER=""
 NOTE=""
+TITLE=""
 REPO_FLAG=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --note)
             NOTE="$2"
+            shift 2
+            ;;
+        --title)
+            TITLE="$2"
             shift 2
             ;;
         --repo)
@@ -81,6 +87,10 @@ fi
 
 if [ -n "$NOTE" ]; then
     JQ_EXPR="$JQ_EXPR | (.steps[] | select(.id == $STEP_ID)).notes = \"$NOTE\""
+fi
+
+if [ -n "$TITLE" ]; then
+    JQ_EXPR="$JQ_EXPR | (.steps[] | select(.id == $STEP_ID)).title = \"$TITLE\""
 fi
 
 # Apply update
