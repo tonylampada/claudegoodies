@@ -1,24 +1,20 @@
 ---
 name: api-mindset
 description: >
-  Activate a development mindset where every software project is driven by its Conceptual API —
-  the DNA of the system. A simple, human-readable document that captures the essential entities,
-  operations, and side effects that define what the software is. Like DNA, it's compact but contains
-  the full blueprint; it replicates across every implementation layer; and mutations are deliberate
-  and propagated everywhere. Use when: (1) starting work on any project that lacks a conceptual API
-  doc, (2) the user says "api mindset" or "conceptual api", (3) implementing new features and
-  wanting to ensure alignment with the system's core capabilities, (4) onboarding to an unfamiliar
-  codebase and needing to understand what it fundamentally does. This skill shapes HOW you develop —
-  not what you build.
+  Development mindset driven by the system's Conceptual API — its DNA.
+  Activate only when: (1) the user explicitly asks, or (2) the project's CLAUDE.md instructs it.
 ---
 
 # API Mindset
 
-Every software system has a Conceptual API — the DNA of the system. It's a compact document that
-captures the essential entities, operations, and side effects that define what the software *is*.
-Like biological DNA, it replicates across every layer of implementation, and any mutation is
-deliberate and propagated everywhere. This skill makes that DNA explicit and uses it as the north
-star for all development.
+Every software system has a Conceptual API — the DNA of the system. A simple, human-readable
+document that captures the essential entities, operations, and side effects that define what the
+software *is*. Like biological DNA, it's compact but contains the full blueprint; it replicates
+across every layer of implementation; and any mutation is deliberate and propagated everywhere.
+
+This skill makes that DNA explicit and uses it as the north star for all development. Once active,
+it shapes how you think about every feature, every refactor, every new component — always aligned
+to the system's core capabilities.
 
 ## Core Principle
 
