@@ -23,6 +23,13 @@ Before implementing anything, ask: **"Where is the Conceptual API doc for this p
 - If it exists: read it, align your work to it.
 - If it doesn't exist: help the user create it from the existing codebase.
 
+**The coupling rule:** every functional component — a UI screen, a backend service, a CLI
+command — must couple to an implementation surface that mirrors the DNA's operations. Never
+build functionality that talks directly to the database, assembles business logic inline, or
+invents its own path. If the surface you need doesn't exist yet, create it as an instantiation
+of the DNA first, then couple to it. This is not passive documentation — it's the contract that
+every implementation layer must honor.
+
 The Conceptual API is NOT an OpenAPI/Swagger spec. It's a simple, concise document in Markdown
 that a product manager can read and understand in under 2 minutes.
 
