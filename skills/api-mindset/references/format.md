@@ -52,6 +52,12 @@ docs/api/
 
 - Business rule that must always hold true
 - Another invariant
+
+## Side Effects
+
+| Trigger              | Effect                                    |
+|----------------------|-------------------------------------------|
+| domain.operationName | What else happens beyond the return value |
 ```
 
 **Conventions:**
@@ -123,6 +129,14 @@ Brief description.
 - Account balance is always >= 0
 - Every transaction is immutable once created
 - Suspended users cannot perform any write operation
+
+## Side Effects
+
+| Trigger             | Effect                                       |
+|---------------------|----------------------------------------------|
+| accounts.transfer   | Notify both users                            |
+| accounts.withdraw   | Notify user if balance drops below threshold |
+| users.suspend       | Notify user, cancel pending operations       |
 ```
 
 ### Level 2 — entities.md

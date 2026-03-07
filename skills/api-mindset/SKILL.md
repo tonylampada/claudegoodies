@@ -59,6 +59,7 @@ Proactively suggest splitting when:
 2. **Value Objects** — non-persistent structures used as operation inputs/outputs
 3. **Operations** — system capabilities as `domain.verb` with typed signatures
 4. **Invariants** — business rules that must always hold
+5. **Side Effects** — what else happens when an operation executes (notifications, events, audit)
 
 ## What the Doc Does NOT Contain
 
@@ -95,6 +96,7 @@ Analyze the codebase to extract:
 - Domain objects (models, types, schemas) → Entities and Value Objects
 - Capabilities (service methods, endpoints, commands) → Operations
 - Business rules (validations, constraints) → Invariants
+- Reactions (notifications, events, triggers) → Side Effects
 
 Draft using the format in [references/format.md](references/format.md). Present to the user.
 Iterate until it captures the system's essence.
