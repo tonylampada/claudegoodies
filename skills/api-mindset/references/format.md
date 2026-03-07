@@ -181,7 +181,11 @@ A record of money movement.
 | to        | Account? | Destination (null for withdrawals) |
 | timestamp | datetime | When it happened                   |
 
-## TransactionFilter
+---
+
+## Value Objects
+
+### TransactionFilter
 
 Criteria for filtering transaction lists.
 
