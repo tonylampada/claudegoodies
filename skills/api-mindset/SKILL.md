@@ -22,85 +22,101 @@ Before implementing anything, ask: **"Where is the Conceptual API doc for this p
 - If it doesn't exist: help the user create it from the existing codebase.
 
 The Conceptual API is NOT an OpenAPI/Swagger spec. It's a simple, concise document in Markdown
-that a product manager can read and understand. It captures entities, their relationships, and
-operations — like method signatures for the system's brain.
+that a product manager can read and understand in under 2 minutes.
 
-## The Conceptual API Document
+## Location and Structure
 
-Location: look for `CONCEPTUAL_API.md` (or similar) at the project root. If absent, propose creating one.
+The Conceptual API lives at `docs/api/` in the project root, using progressive disclosure:
 
-See [references/format.md](references/format.md) for the template and a concrete example.
+- **`docs/api/overview.md`** — Level 1: all entities, operations, and invariants at a glance
+- **`docs/api/entities.md`** — Level 2: detailed attributes and relationships per entity
 
-### What It Contains
+See [references/format.md](references/format.md) for templates and a complete example.
 
-1. **Entities** — the core nouns of the system, their key attributes, and relationships
-2. **Operations** — the core verbs, expressed as method-like signatures with inputs and outputs
-3. **Invariants** — business rules that must always hold true
+### Modularization
 
-### What It Does NOT Contain
+When the system grows, split into modules:
 
-- Implementation details (database schemas, HTTP routes, class hierarchies)
-- Infrastructure concerns (deployment, scaling, caching)
+```
+docs/api/
+├── overview.md           # index linking to modules
+├── accounts/
+│   ├── overview.md
+│   └── entities.md
+└── payments/
+    ├── overview.md
+    └── entities.md
+```
+
+Proactively suggest splitting when:
+- The overview has 15+ operations that cluster into distinct groups
+- Entities naturally divide into groups with few cross-references
+- The overview exceeds roughly 2 printed pages
+
+## What the Doc Contains
+
+1. **Entities** — persistent domain objects (implicit ID, no infra attributes)
+2. **Value Objects** — non-persistent structures used as operation inputs/outputs
+3. **Operations** — system capabilities as `domain.verb` with typed signatures
+4. **Invariants** — business rules that must always hold
+
+## What the Doc Does NOT Contain
+
+- Implementation details (schemas, routes, class hierarchies)
+- Infrastructure concerns (deployment, caching, scaling)
 - UI/UX specifics
+- ID fields or infra attributes (created_at, cache columns)
 
 ## How It Shapes Development
 
-Once the Conceptual API exists, every implementation surface is an **instantiation** of it:
+Every implementation surface is an **instantiation** of the Conceptual API:
 
 | Layer | Instantiation |
 |-------|--------------|
-| Backend services | Service classes whose methods mirror the operations |
-| REST/GraphQL endpoints | Routes that map 1:1 to operations |
-| Frontend services | JS/TS modules exposing the same operations to UI code |
+| Backend services | Service methods that mirror operations |
+| REST/GraphQL | Routes that map 1:1 to operations |
+| Frontend services | JS/TS modules exposing operations to UI code |
 | CLI commands | Commands matching operations |
-| Event handlers | Events that correspond to operation side-effects |
+| Event handlers | Events corresponding to operation side-effects |
 
-The codebase becomes predictable: if you know the Conceptual API, you can guess where code lives
-and what it looks like at every layer.
+The codebase becomes predictable: knowing the Conceptual API lets you guess where code lives
+and what it looks like at every layer. Name things consistently — if the doc says `transfer`,
+the code says `transfer` everywhere.
 
 ## Workflow
 
-### 1. Discovery
+### Discovery
 
-When entering a project:
+When entering a project, search for `docs/api/overview.md`. If not found, propose creating it.
 
-```
-1. Search for CONCEPTUAL_API.md (or similar) at the root
-2. If found → read it, proceed with alignment
-3. If not found → scan the codebase to understand core entities and operations
-```
-
-### 2. Creation (when the doc doesn't exist)
+### Creation
 
 Analyze the codebase to extract:
-- What are the main domain objects? (models, types, schemas)
-- What operations exist? (service methods, API endpoints, commands)
-- What business rules are enforced? (validations, invariants)
+- Domain objects (models, types, schemas) → Entities and Value Objects
+- Capabilities (service methods, endpoints, commands) → Operations
+- Business rules (validations, constraints) → Invariants
 
-Draft the doc using the format in [references/format.md](references/format.md) and present it
-to the user for review. Iterate until it feels right.
+Draft using the format in [references/format.md](references/format.md). Present to the user.
+Iterate until it captures the system's essence.
 
-### 3. Alignment (during development)
+### Alignment
 
 When implementing a feature:
+1. Check if the feature maps to existing operations or needs new ones
+2. If new operations needed, update the Conceptual API doc first
+3. Implement across layers following the same operation names and signatures
 
-1. Check if the feature maps to existing operations or requires new ones
-2. If new operations are needed, propose updating the Conceptual API doc first
-3. Implement across layers following the same operation signature
-4. Name things consistently — the operation name in the doc should appear in service methods,
-   endpoint names, event names, and frontend calls
+### Evolution
 
-### 4. Evolution
-
-The Conceptual API is a living document. When it changes:
-
-1. Propose the change explicitly — don't let it drift silently
-2. Update the doc before (or alongside) the implementation
+The Conceptual API is a living document:
+1. Propose changes explicitly — never let it drift silently
+2. Update the doc before or alongside implementation
 3. Consider impact across all instantiation layers
 
 ## Anti-Patterns
 
 - **Implementing without checking the doc** — always consult it first
-- **Letting implementation details leak into the doc** — keep it conceptual
-- **Divergent naming** — if the doc says `transfer`, don't call it `moveBalance` in code
+- **Implementation details leaking in** — keep it conceptual
+- **Divergent naming** — if the doc says `transfer`, don't call it `moveBalance`
 - **Treating it as optional** — this IS the source of truth for what the system does
+- **Over-specifying** — this is not OpenAPI; keep it readable by non-engineers
