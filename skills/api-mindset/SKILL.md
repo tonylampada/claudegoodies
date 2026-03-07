@@ -50,10 +50,8 @@ docs/api/
     └── entities.md
 ```
 
-Proactively suggest splitting when:
-- The overview has 15+ operations that cluster into distinct groups
-- Entities naturally divide into groups with few cross-references
-- The overview exceeds roughly 2 printed pages
+Proactively suggest splitting when operations and entities naturally cluster into distinct groups
+with few cross-references. Use judgment — every system is different.
 
 ## What the Doc Contains
 
