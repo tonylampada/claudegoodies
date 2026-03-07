@@ -2,17 +2,23 @@
 name: api-mindset
 description: >
   Activate a development mindset where every software project is driven by its Conceptual API —
-  a simple, human-readable document defining the system's core entities and operations.
-  Use when: (1) starting work on any project that lacks a conceptual API doc, (2) the user says
-  "api mindset" or "conceptual api", (3) implementing new features and wanting to ensure alignment
-  with the system's core capabilities, (4) onboarding to an unfamiliar codebase and needing to
-  understand what it fundamentally does. This skill shapes HOW you develop — not what you build.
+  the DNA of the system. A simple, human-readable document that captures the essential entities,
+  operations, and side effects that define what the software is. Like DNA, it's compact but contains
+  the full blueprint; it replicates across every implementation layer; and mutations are deliberate
+  and propagated everywhere. Use when: (1) starting work on any project that lacks a conceptual API
+  doc, (2) the user says "api mindset" or "conceptual api", (3) implementing new features and
+  wanting to ensure alignment with the system's core capabilities, (4) onboarding to an unfamiliar
+  codebase and needing to understand what it fundamentally does. This skill shapes HOW you develop —
+  not what you build.
 ---
 
 # API Mindset
 
-Every software system has a conceptual API — the essential entities and operations that define
-what it does. This skill makes that API explicit and uses it as the north star for all development.
+Every software system has a Conceptual API — the DNA of the system. It's a compact document that
+captures the essential entities, operations, and side effects that define what the software *is*.
+Like biological DNA, it replicates across every layer of implementation, and any mutation is
+deliberate and propagated everywhere. This skill makes that DNA explicit and uses it as the north
+star for all development.
 
 ## Core Principle
 
