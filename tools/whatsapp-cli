@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# whatsapp-cli - WhatsApp CLI wrapper for mcporter (read-only)
+
+set -euo pipefail
+
+cmd="${1:-}"
+shift || true
+
+# Helper: call mcporter and strip the node warning
+mcp() {
+  mcporter call "whatsapp.$1" "${@:2}" 2>&1 | grep -v "ExperimentalWarning" | grep -v "node --trace-warnings"
+}
+
+case "$cmd" in
+  contacts)
+    # Search contacts by name or phone
+    query="${1:-}"
+    [[ -z "$query" ]] && { echo "Usage: whatsapp-cli contacts <query>"; exit 1; }
+    mcp search_contacts "query=$query"
+    ;;
+
+  chats)
+    # List chats, optionally filtered
+    limit=20
+    query=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --limit) limit="$2"; shift 2 ;;
+        *) query="$1"; shift ;;
+      esac
+    done
+    if [[ -n "$query" ]]; then
+      mcp list_chats "query=$query" "limit=$limit"
+    else
+      mcp list_chats "limit=$limit"
+    fi
+    ;;
+
+  chat)
+    # Get chat info by JID
+    jid="${1:-}"
+    [[ -z "$jid" ]] && { echo "Usage: whatsapp-cli chat <jid>"; exit 1; }
+    mcp get_chat "chat_jid=$jid"
+    ;;
+
+  chat-by-phone)
+    # Get direct chat by phone number
+    phone="${1:-}"
+    [[ -z "$phone" ]] && { echo "Usage: whatsapp-cli chat-by-phone <phone_number>"; exit 1; }
+    mcp get_direct_chat_by_contact "sender_phone_number=$phone"
+    ;;
+
+  contact-chats)
+    # Get all chats involving a contact
+    jid="${1:-}"
+    limit="${2:-20}"
+    [[ -z "$jid" ]] && { echo "Usage: whatsapp-cli contact-chats <jid> [limit]"; exit 1; }
+    mcp get_contact_chats "jid=$jid" "limit=$limit"
+    ;;
+
+  messages|read)
+    # List messages from a chat
+    jid=""
+    limit=20
+    query=""
+    after=""
+    before=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --limit) limit="$2"; shift 2 ;;
+        --query) query="$2"; shift 2 ;;
+        --after) after="$2"; shift 2 ;;
+        --before) before="$2"; shift 2 ;;
+        *) [[ -z "$jid" ]] && jid="$1"; shift ;;
+      esac
+    done
+    [[ -z "$jid" ]] && { echo "Usage: whatsapp-cli messages <jid> [--limit N] [--query Q] [--after DATE] [--before DATE]"; exit 1; }
+
+    args=("chat_jid=$jid" "limit=$limit" "include_context=false")
+    [[ -n "$query" ]] && args+=("query=$query")
+    [[ -n "$after" ]] && args+=("after=$after")
+    [[ -n "$before" ]] && args+=("before=$before")
+    mcp list_messages "${args[@]}"
+    ;;
+
+  search)
+    # Search messages across all chats
+    limit=20
+    query=""
+    after=""
+    before=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --limit) limit="$2"; shift 2 ;;
+        --after) after="$2"; shift 2 ;;
+        --before) before="$2"; shift 2 ;;
+        *) query="$query $1"; shift ;;
+      esac
+    done
+    query="${query# }"
+    [[ -z "$query" ]] && { echo "Usage: whatsapp-cli search <query> [--limit N] [--after DATE] [--before DATE]"; exit 1; }
+
+    args=("query=$query" "limit=$limit" "include_context=false")
+    [[ -n "$after" ]] && args+=("after=$after")
+    [[ -n "$before" ]] && args+=("before=$before")
+    mcp list_messages "${args[@]}"
+    ;;
+
+  context)
+    # Get context around a message
+    msg_id="${1:-}"
+    before="${2:-5}"
+    after="${3:-5}"
+    [[ -z "$msg_id" ]] && { echo "Usage: whatsapp-cli context <message_id> [before] [after]"; exit 1; }
+    mcp get_message_context "message_id=$msg_id" "before=$before" "after=$after"
+    ;;
+
+  last)
+    # Last interaction with a contact
+    jid="${1:-}"
+    [[ -z "$jid" ]] && { echo "Usage: whatsapp-cli last <jid>"; exit 1; }
+    mcp get_last_interaction "jid=$jid"
+    ;;
+
+  download)
+    # Download media from a message
+    msg_id="${1:-}"
+    chat_jid="${2:-}"
+    [[ -z "$msg_id" || -z "$chat_jid" ]] && { echo "Usage: whatsapp-cli download <message_id> <chat_jid>"; exit 1; }
+    mcp download_media "message_id=$msg_id" "chat_jid=$chat_jid"
+    ;;
+
+  *)
+    cat <<'EOF'
+whatsapp-cli - WhatsApp CLI (read-only wrapper for mcporter)
+
+Commands:
+  contacts <query>                    Search contacts by name or phone
+  chats [--limit N] [query]           List chats (optionally filtered)
+  chat <jid>                          Get chat metadata by JID
+  chat-by-phone <phone>               Get direct chat by phone number
+  contact-chats <jid> [limit]         Get all chats involving a contact
+  messages <jid> [options]            List messages from a chat
+  read <jid> [options]                Alias for messages
+  search <query> [options]            Search messages across all chats
+  context <message_id> [before] [after]  Get context around a message
+  last <jid>                          Last interaction with a contact
+  download <msg_id> <chat_jid>        Download media from a message
+
+Options for messages/search:
+  --limit N       Max messages (default: 20)
+  --query Q       Filter by content (messages only)
+  --after DATE    Messages after date (ISO-8601)
+  --before DATE   Messages before date (ISO-8601)
+
+Examples:
+  whatsapp-cli contacts "João"
+  whatsapp-cli chats --limit 10
+  whatsapp-cli chats "Terapeutas"
+  whatsapp-cli messages 5512999999999@s.whatsapp.net --limit 10
+  whatsapp-cli search "reunião" --limit 5
+  whatsapp-cli search "projeto" --after 2026-03-01
+EOF
+    ;;
+esac
