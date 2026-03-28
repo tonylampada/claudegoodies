@@ -1,8 +1,9 @@
-const SLACK_TOKEN = process.env.SLACK_TOKEN;
+#!/usr/bin/env node
+const SLACK_XOXP_TOKEN = process.env.SLACK_XOXP_TOKEN;
 const WORKSPACE = process.env.SLACK_WORKSPACE;
 const BOT_NAME = process.env.SLACK_BOT_NAME || 'Bot';
 
-if (!SLACK_TOKEN) { console.error('Missing SLACK_TOKEN env var'); process.exit(1); }
+if (!SLACK_XOXP_TOKEN) { console.error('Missing SLACK_XOXP_TOKEN env var'); process.exit(1); }
 if (!WORKSPACE) { console.error('Missing SLACK_WORKSPACE env var'); process.exit(1); }
 
 const args = process.argv.slice(2);
@@ -14,7 +15,7 @@ async function slack(method, params = {}) {
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   
   const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${SLACK_TOKEN}` }
+    headers: { 'Authorization': `Bearer ${SLACK_XOXP_TOKEN}` }
   });
   return res.json();
 }
@@ -331,15 +332,24 @@ async function main() {
       const limit = limitIdx > -1 ? parseInt(args[limitIdx + 1]) : 20;
       
       if (!query) return console.error('Usage: slack-cli search <query> [--limit N] [--links]');
-      
-      const res = await slack('search.messages', { query, count: limit });
-      if (!res.ok) return console.error('Error:', res.error);
-      
-      for (const match of res.messages?.matches || []) {
-        const ch = match.channel?.name || '?';
-        const chId = match.channel?.id;
-        const formatted = await formatMessage(match, chId, true);
-        console.log(`[#${ch}] ${formatted}`);
+
+      let collected = 0;
+      let page = 1;
+      while (collected < limit) {
+        const count = Math.min(limit - collected, 100);
+        const res = await slack('search.messages', { query, count, page });
+        if (!res.ok) return console.error('Error:', res.error);
+        const matches = res.messages?.matches || [];
+        if (matches.length === 0) break;
+        for (const match of matches) {
+          const ch = match.channel?.name || '?';
+          const chId = match.channel?.id;
+          const formatted = await formatMessage(match, chId, true);
+          console.log(`[#${ch}] ${formatted}`);
+        }
+        collected += matches.length;
+        if (page >= (res.messages?.paging?.pages || 1)) break;
+        page++;
       }
       break;
     }
@@ -555,7 +565,7 @@ async function main() {
       const res = await fetch('https://slack.com/api/chat.postMessage', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${SLACK_TOKEN}`,
+          'Authorization': `Bearer ${SLACK_XOXP_TOKEN}`,
           'Content-Type': 'application/json; charset=utf-8'
         },
         body: JSON.stringify({ channel: channelId, text: fallbackText, blocks: richBlocks, ...(threadTs && { thread_ts: threadTs }) })
@@ -590,7 +600,7 @@ async function main() {
       const res = await fetch('https://slack.com/api/chat.postMessage', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${SLACK_TOKEN}`,
+          'Authorization': `Bearer ${SLACK_XOXP_TOKEN}`,
           'Content-Type': 'application/json; charset=utf-8'
         },
         body: JSON.stringify({ channel: channelId, text: prefixedText })
