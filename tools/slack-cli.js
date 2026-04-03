@@ -616,6 +616,124 @@ async function main() {
       break;
     }
     
+    case 'digest': {
+      const channelArg = args[1];
+      if (!channelArg) {
+        return console.error('Usage: slack-cli digest <channel_id|#channel_name> [--date YYYY-MM-DD] [--links]\n\nFetches all messages from a channel for a given day, grouped by thread.\nDefaults to yesterday if --date is not provided.');
+      }
+
+      let channelId = channelArg;
+      if (!/^[CGD][A-Z0-9]+$/.test(channelArg)) {
+        const resolved = await findChannelIdByName(channelArg);
+        if (!resolved) return console.error(`Error: channel not found (${channelArg}).`);
+        channelId = resolved;
+      }
+
+      const dateIdx = args.indexOf('--date');
+      let targetDate;
+      if (dateIdx > -1 && args[dateIdx + 1]) {
+        targetDate = new Date(args[dateIdx + 1] + 'T00:00:00');
+      } else {
+        targetDate = new Date();
+        targetDate.setDate(targetDate.getDate() - 1);
+        targetDate.setHours(0, 0, 0, 0);
+      }
+      const dayStart = Math.floor(targetDate.getTime() / 1000);
+      const dayEnd = dayStart + 86400;
+      const dateStr = targetDate.toISOString().slice(0, 10);
+
+      // Fetch all messages from the day using pagination
+      let allMessages = [];
+      let cursor = null;
+      for (let i = 0; i < 50; i++) {
+        const params = { channel: channelId, oldest: dayStart, latest: dayEnd, limit: 200, inclusive: true };
+        if (cursor) params.cursor = cursor;
+        const res = await slack('conversations.history', params);
+        if (!res.ok) return console.error('Error:', res.error);
+        allMessages = allMessages.concat(res.messages || []);
+        cursor = res.response_metadata?.next_cursor;
+        if (!cursor) break;
+      }
+
+      if (allMessages.length === 0) {
+        console.log(`No messages found on ${dateStr}`);
+        break;
+      }
+
+      // Separate: thread parents (have reply_count) vs standalone
+      const threadParentTs = new Set();
+      const standalone = [];
+      for (const msg of allMessages) {
+        if (msg.reply_count > 0) {
+          threadParentTs.add(msg.ts);
+        } else if (!msg.thread_ts || msg.thread_ts === msg.ts) {
+          standalone.push(msg);
+        }
+        // thread replies (thread_ts !== ts) found via history are orphans from threads
+        // whose parent is outside this day — group them too
+        if (msg.thread_ts && msg.thread_ts !== msg.ts) {
+          threadParentTs.add(msg.thread_ts);
+        }
+      }
+
+      const chName = await getChannelName(channelId);
+      console.log(`=== #${chName} — ${dateStr} ===\n`);
+
+      // Fetch and display each thread
+      const threadTsList = [...threadParentTs].sort();
+      for (const parentTs of threadTsList) {
+        const res = await slack('conversations.replies', { channel: channelId, ts: parentTs, limit: 200 });
+        if (!res.ok) continue;
+        const msgs = res.messages || [];
+        if (msgs.length === 0) continue;
+
+        // Filter: show parent + only replies from the target day
+        const parent = msgs[0];
+        const parentAuthor = parent.user ? await resolveUserName(parent.user) : (parent.username || 'unknown');
+        const parentTs2 = new Date(parseFloat(parent.ts) * 1000).toISOString().slice(0, 10);
+        const parentText = (parent.text || '').slice(0, 300).replace(/\n/g, ' ');
+        let header = `📌 [${parentTs2}] Thread by @${parentAuthor}: ${parentText}`;
+        header += `\n🆔 ${parent.ts}`;
+        // Link to first reply in thread (not the parent)
+        const firstReply = msgs.length > 1 ? msgs[1] : parent;
+        header += `\n🔗 ${makePermalink(channelId, firstReply.ts, parent.ts)}`;
+        console.log(header);
+
+        const replies = msgs.slice(1).filter(m => {
+          const msgTime = parseFloat(m.ts);
+          return msgTime >= dayStart && msgTime < dayEnd;
+        });
+
+        for (const reply of replies) {
+          const author = reply.user ? await resolveUserName(reply.user) : (reply.username || 'unknown');
+          const ts = new Date(parseFloat(reply.ts) * 1000).toISOString().slice(0, 16).replace('T', ' ');
+          const text = (reply.text || '').slice(0, 500).replace(/\n/g, ' ');
+          let line = `    ↳ [${ts}] @${author}: ${text}`;
+          if (showLinks) {
+            line += `\n       🔗 ${makePermalink(channelId, reply.ts, parentTs)}`;
+          }
+          console.log(line);
+        }
+        if (replies.length === 0) {
+          console.log('    (no replies on this day)');
+        }
+        console.log('');
+      }
+
+      // Display standalone messages
+      const standaloneOnDay = standalone.sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts));
+      if (standaloneOnDay.length > 0) {
+        console.log('💬 Standalone messages:');
+        for (const msg of standaloneOnDay) {
+          console.log(await formatMessage(msg, channelId));
+        }
+        console.log('');
+      }
+
+      console.log(`--- ${allMessages.length} messages total, ${threadTsList.length} threads, ${standaloneOnDay.length} standalone ---`);
+      break;
+    }
+
     default:
       console.log(`slack-cli - Slack CLI
 
@@ -624,6 +742,7 @@ Commands:
   read <channel_id> [--limit N] [--links]    Read channel messages
   thread <channel_id> <ts> [--limit N] [--links]  Read thread replies
   search <query> [--limit N] [--links]       Search messages
+  digest <channel|#name> [--date YYYY-MM-DD] [--links]  Day digest grouped by thread
   permalink <channel_id> <ts> [thread_ts]    Generate permalink for message
   user <user_id>                        Get user info
   users [--search name]                 List/search users
@@ -642,6 +761,8 @@ Examples:
   slack-cli read C06T4V8JJGN --limit 5 --links
   slack-cli thread C06T4V8JJGN 1769431483.032279 --links
   slack-cli search "from:@tony bug" --limit 5 --links
+  slack-cli digest #team-dataset-management --links
+  slack-cli digest C06T4V8JJGN --date 2026-04-01 --links
   slack-cli permalink C06T4V8JJGN 1769431483.032279
   slack-cli dms --limit 10
   slack-cli dm @iuri --limit 20
