@@ -92,8 +92,8 @@ async function formatMessage(msg, channelId, resolveNames = true, threadTs = nul
   
   const ts = new Date(parseFloat(msg.ts) * 1000).toISOString().slice(0, 16).replace('T', ' ');
   const threadInfo = msg.reply_count ? ` 💬${msg.reply_count}` : '';
-  const text = (msg.text || '').slice(0, 500).replace(/\n/g, ' ');
-  
+  const text = (msg.text || '').replace(/\n/g, ' ');
+
   let output = `[${ts}] @${author}${threadInfo}: ${text}`;
   
   if (showLinks && channelId) {
@@ -306,8 +306,8 @@ async function main() {
         const author = msg.user ? await resolveUserName(msg.user) : (msg.username || 'unknown');
         const ts = new Date(parseFloat(msg.ts) * 1000).toISOString().slice(0, 16).replace('T', ' ');
         const threadInfo = msg.reply_count ? ` 💬${msg.reply_count}` : '';
-        const text = (msg.text || '').slice(0, 500).replace(/\n/g, ' ');
-        
+        const text = (msg.text || '').replace(/\n/g, ' ');
+
         let output = `[${ts}] @${author}${threadInfo}: ${text}`;
         
         // Link para todas as mensagens quando --links
@@ -691,7 +691,7 @@ async function main() {
         const parent = msgs[0];
         const parentAuthor = parent.user ? await resolveUserName(parent.user) : (parent.username || 'unknown');
         const parentTs2 = new Date(parseFloat(parent.ts) * 1000).toISOString().slice(0, 10);
-        const parentText = (parent.text || '').slice(0, 300).replace(/\n/g, ' ');
+        const parentText = (parent.text || '').replace(/\n/g, ' ');
         let header = `📌 [${parentTs2}] Thread by @${parentAuthor}: ${parentText}`;
         header += `\n🆔 ${parent.ts}`;
         // Link to first reply in thread (not the parent)
@@ -707,7 +707,7 @@ async function main() {
         for (const reply of replies) {
           const author = reply.user ? await resolveUserName(reply.user) : (reply.username || 'unknown');
           const ts = new Date(parseFloat(reply.ts) * 1000).toISOString().slice(0, 16).replace('T', ' ');
-          const text = (reply.text || '').slice(0, 500).replace(/\n/g, ' ');
+          const text = (reply.text || '').replace(/\n/g, ' ');
           let line = `    ↳ [${ts}] @${author}: ${text}`;
           if (showLinks) {
             line += `\n       🔗 ${makePermalink(channelId, reply.ts, parentTs)}`;
