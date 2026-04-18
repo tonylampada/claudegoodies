@@ -8,7 +8,7 @@ shift || true
 
 # Helper: call mcporter and strip the node warning
 mcp() {
-  mcporter call "whatsapp.$1" "${@:2}" 2>&1 | grep -v "ExperimentalWarning" | grep -v "node --trace-warnings"
+  mcporter call "whatsapp.$1" "${@:2}" 2>/dev/null | grep -v "^\[mcporter\]" | grep -v "^warning:" | grep -v "ExperimentalWarning" | grep -v "node --trace-warnings" | grep -v "Processing request of type" | grep -v "CallToolRequest"
 }
 
 case "$cmd" in
