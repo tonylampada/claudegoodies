@@ -75,7 +75,7 @@ function runTask(task, state) {
 
   const cmd = `bash -c '${env} && ${task.command}'`;
   try {
-    execSync(cmd, { cwd: REPO_DIR, stdio: 'pipe', timeout: 10 * 60 * 1000 });
+    execSync(cmd, { cwd: REPO_DIR, stdio: 'pipe', timeout: 60 * 60 * 1000 });
     state[task.name] = Date.now();
     saveState(state);
     log(`${task.name}: done`);
