@@ -35,6 +35,8 @@ Every brain has a `MAP.md` at its root. This is the map of the map — it descri
 
 The meta-map is the first thing you read when entering a brain, and you update it whenever the structure changes.
 
+**MAP.md never grows with events.** It is an index, not a log. If you are about to append a dated entry, a daily/weekly digest, an ingest summary, an incident note, or a "last updated" line — stop. That content belongs in the corresponding domain file (`weekly/`, `bugs/`, `decisions/`, etc.), in `_reports/`, or in the commit message. A healthy MAP.md is roughly the same size today as it was a month ago; if it is growing, something is being logged into it that shouldn't be.
+
 ### Territory Types (from Maps of Meaning)
 
 When working with a brain, think of its contents in three categories:
@@ -185,10 +187,6 @@ Where information flows in from:
 Known areas not yet covered:
 - [Gap 1]
 - [Gap 2]
-
-## Last Updated
-
-YYYY-MM-DD — brief note on what changed
 ```
 
 ### 2. Ingest Information
@@ -258,7 +256,6 @@ When evolving:
 1. Propose the structural change to the user before making it.
 2. Move files to their new locations.
 3. Update MAP.md to reflect the new structure.
-4. Note the change in MAP.md's "Last Updated" section.
 
 ## Multiple Brains & Repo Convention
 
