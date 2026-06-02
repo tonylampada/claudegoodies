@@ -16,3 +16,14 @@ demo - [video]([https://www.loom.com/share/e4a9f544efd04fedb208311b66104fda](htt
 
 * hook configuration - [settings.json](https://gist.github.com/tonylampada/9d3c52d108f9939c001047e425395f6b)
 * hook script - [notification.sh](https://gist.github.com/tonylampada/df613200d70272ae87b3276a008548ff)
+
+## Included Tools
+
+### 📬 [AgentMail listener](./tools/agentmail-listen.md)
+Generic AgentMail websocket listener that runs a configured command for each matching email event.
+
+### 📝 [Avoma meeting ID from email](./tools/avoma-meeting-id-from-email.md)
+Extract Avoma meeting UUIDs from Avoma notification/forwarded emails so `avoma-cli` can fetch transcripts.
+
+### 📬 [AgentMail Avoma meeting IDs](./tools/agentmail-avoma-meeting-ids.md)
+Scan recent AgentMail messages and extract Avoma meeting UUIDs.

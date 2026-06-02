@@ -37,7 +37,7 @@ async function main() {
   switch (command) {
     case 'me': {
       const res = await tg('getMe');
-      if (!res.ok) return console.error('Error:', res.description);
+      if (!res.ok) { console.error('Error:', res.description); process.exit(1); }
       const bot = res.result;
       console.log(`ID: ${bot.id}`);
       console.log(`Name: ${bot.first_name}`);
@@ -50,7 +50,7 @@ async function main() {
       const limit = limitIdx > -1 ? parseInt(args[limitIdx + 1]) : 20;
 
       const res = await tg('getUpdates', { limit, allowed_updates: ['message'] });
-      if (!res.ok) return console.error('Error:', res.description);
+      if (!res.ok) { console.error('Error:', res.description); process.exit(1); }
 
       const updates = res.result;
       if (updates.length === 0) {
@@ -77,7 +77,7 @@ async function main() {
         text,
         parse_mode: 'Markdown'
       });
-      if (!res.ok) return console.error('Error:', res.description);
+      if (!res.ok) { console.error('Error:', res.description); process.exit(1); }
       console.log(`Sent to ${chatId} at ${new Date(res.result.date * 1000).toISOString()}`);
       break;
     }
@@ -95,7 +95,7 @@ async function main() {
         text,
         parse_mode: 'HTML'
       });
-      if (!res.ok) return console.error('Error:', res.description);
+      if (!res.ok) { console.error('Error:', res.description); process.exit(1); }
       console.log(`Sent to ${chatId} at ${new Date(res.result.date * 1000).toISOString()}`);
       break;
     }
@@ -138,7 +138,7 @@ async function main() {
       if (caption) formData.append('caption', caption);
 
       const res = await tgForm(method, formData);
-      if (!res.ok) return console.error('Error:', res.description);
+      if (!res.ok) { console.error('Error:', res.description); process.exit(1); }
       console.log(`Sent ${fileName} to ${chatId}`);
       break;
     }
@@ -169,4 +169,4 @@ Examples:
   }
 }
 
-main().catch(console.error);
+main().catch((err) => { console.error(err); process.exit(1); });

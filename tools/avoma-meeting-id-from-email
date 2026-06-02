@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Extract Avoma meeting UUIDs from Avoma notification/forwarded emails.
+
+Reads text, HTML, raw email content, or AgentMail normalized JSON from stdin or files.
+Prints unique meeting UUIDs, one per line by default.
+"""
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+from urllib.parse import unquote, urlparse, parse_qs
+
+UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+AVOMA_MEETING_RE = re.compile(
+    r"(?:https?://)?(?:app\.)?avoma\.com/meetings/"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+    re.IGNORECASE,
+)
+
+
+def walk_strings(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        out: list[str] = []
+        # Prefer likely email fields first so output order follows useful links.
+        for key in ("text", "extracted_text", "html", "extracted_html", "preview", "subject"):
+            if key in value:
+                out.extend(walk_strings(value[key]))
+        for key, child in value.items():
+            if key not in {"text", "extracted_text", "html", "extracted_html", "preview", "subject"}:
+                out.extend(walk_strings(child))
+        return out
+    if isinstance(value, list):
+        out: list[str] = []
+        for child in value:
+            out.extend(walk_strings(child))
+        return out
+    return [str(value)]
+
+
+def expand_text(text: str) -> str:
+    """Return text plus common decoded variants for redirect-wrapped email URLs."""
+    variants = [text, html.unescape(text)]
+    # Decode click trackers like https://click.avoma.com/CL0/https:%2F%2Fapp.avoma.com%2Fmeetings%2F...
+    for _ in range(3):
+        decoded = unquote(variants[-1])
+        if decoded == variants[-1]:
+            break
+        variants.append(decoded)
+
+    # Also decode URL-ish substrings individually; HTML wrappers can mix escaped and encoded text.
+    urlish = re.findall(r"https?://[^\s\"'<>]+", "\n".join(variants))
+    for url in urlish:
+        variants.append(unquote(html.unescape(url)))
+        try:
+            parsed = urlparse(unquote(html.unescape(url)))
+            # Some redirectors carry the target in path or query params.
+            variants.append(parsed.path)
+            for vals in parse_qs(parsed.query).values():
+                variants.extend(vals)
+        except Exception:
+            pass
+    return "\n".join(variants)
+
+
+def extract_ids(blob: str) -> list[str]:
+    strings: list[str]
+    try:
+        parsed = json.loads(blob)
+        strings = walk_strings(parsed)
+    except Exception:
+        strings = [blob]
+
+    seen: set[str] = set()
+    ids: list[str] = []
+    for s in strings:
+        expanded = expand_text(s)
+        candidates = [m.group(1) for m in AVOMA_MEETING_RE.finditer(expanded)]
+        # Fallback: only accept bare UUIDs if the surrounding expanded text mentions Avoma.
+        if not candidates and "avoma" in expanded.lower():
+            candidates = [m.group(0) for m in UUID_RE.finditer(expanded)]
+        for uuid in candidates:
+            uuid = uuid.lower()
+            if uuid not in seen:
+                seen.add(uuid)
+                ids.append(uuid)
+    return ids
+
+
+def read_inputs(paths: list[str]) -> str:
+    if not paths or paths == ["-"]:
+        return sys.stdin.read()
+    return "\n".join(Path(p).read_text(encoding="utf-8", errors="replace") for p in paths)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Extract Avoma meeting UUIDs from email text/HTML/JSON.")
+    ap.add_argument("paths", nargs="*", help="Files to read, or stdin if omitted / '-'")
+    ap.add_argument("--json", action="store_true", help="Output JSON: {meeting_uuids: [...]}")
+    ap.add_argument("--first", action="store_true", help="Print only the first UUID")
+    args = ap.parse_args()
+
+    ids = extract_ids(read_inputs(args.paths))
+    if args.first:
+        if ids:
+            print(ids[0])
+        return 0 if ids else 1
+    if args.json:
+        print(json.dumps({"meeting_uuids": ids}, indent=2))
+    else:
+        for uuid in ids:
+            print(uuid)
+    return 0 if ids else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
