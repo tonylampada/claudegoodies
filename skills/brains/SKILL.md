@@ -140,6 +140,8 @@ Key conventions:
 
 When the user wants to create a new brain:
 
+0. **Do not create files, commits, repos, or cron jobs before the user has approved the MAP.md/ontology.** Present the proposed structure in chat first; materialize only after explicit approval.
+
 1. **Interview the user exhaustively.** This is the most important step. Don't accept a vague "I want a brain for work" — dig deep. Ask about:
    - What slice of reality does this brain cover?
    - What are the main topics, categories, or dimensions of this domain?
@@ -287,6 +289,8 @@ Simple JSON array of brain directory names. Used by heartbeat to discover brains
 Bash script sourced by heartbeat before running any task. Sets up the environment: PATH, API tokens (from `.env`), helper functions (`run`, `run_capture`, `setup_log`). Uses `export -f` so functions are available in child processes (the task scripts). This file is repo-specific and typically gitignored.
 
 ### Heartbeat
+
+Heartbeat is optional. If the user's environment has its own scheduling (cron/jobs), use that instead. Record the choice in `MAP.md` under Automation to avoid parallel schedulers.
 
 The heartbeat (`scripts/heartbeat.js` in this skill) is a cron-driven task dispatcher:
 
