@@ -6,6 +6,11 @@ const BOT_NAME = process.env.SLACK_BOT_NAME || 'Bot';
 if (!SLACK_XOXP_TOKEN) { console.error('Missing SLACK_XOXP_TOKEN env var'); process.exit(1); }
 if (!WORKSPACE) { console.error('Missing SLACK_WORKSPACE env var'); process.exit(1); }
 
+// Print error to stderr and exit non-zero. Used for usage messages, missing
+// args, file-read failures, and Slack API errors. Without this, callers
+// (cron jobs, shell scripts under `set -e`) silently treat failures as success.
+function die(...args) { console.error(...args); process.exit(1); }
+
 const args = process.argv.slice(2);
 const command = args[0];
 const showLinks = args.includes('--links');
@@ -257,7 +262,7 @@ async function main() {
         limit: 200,
         exclude_archived: true 
       });
-      if (!res.ok) return console.error('Error:', res.error);
+      if (!res.ok) return die('Error:', res.error);
       
       res.channels
         .sort((a, b) => a.name.localeCompare(b.name))
@@ -273,10 +278,10 @@ async function main() {
       const limitIdx = args.indexOf('--limit');
       const limit = limitIdx > -1 ? parseInt(args[limitIdx + 1]) : 20;
       
-      if (!channelId) return console.error('Usage: slack-cli read <channel_id> [--limit N] [--links]');
+      if (!channelId) return die('Usage: slack-cli read <channel_id> [--limit N] [--links]');
       
       const res = await slack('conversations.history', { channel: channelId, limit });
-      if (!res.ok) return console.error('Error:', res.error);
+      if (!res.ok) return die('Error:', res.error);
       
       const messages = res.messages.reverse();
       for (const msg of messages) {
@@ -292,11 +297,11 @@ async function main() {
       const limit = limitIdx > -1 ? parseInt(args[limitIdx + 1]) : 50;
       
       if (!channelId || !threadTs) {
-        return console.error('Usage: slack-cli thread <channel_id> <thread_ts> [--limit N] [--links]');
+        return die('Usage: slack-cli thread <channel_id> <thread_ts> [--limit N] [--links]');
       }
       
       const res = await slack('conversations.replies', { channel: channelId, ts: threadTs, limit });
-      if (!res.ok) return console.error('Error:', res.error);
+      if (!res.ok) return die('Error:', res.error);
       
       // Com --links: mostra link de TODAS as mensagens (necessário para journal)
       const messages = res.messages;
@@ -331,14 +336,14 @@ async function main() {
       const query = args.slice(1, endIdx === Infinity ? undefined : endIdx).join(' ');
       const limit = limitIdx > -1 ? parseInt(args[limitIdx + 1]) : 20;
       
-      if (!query) return console.error('Usage: slack-cli search <query> [--limit N] [--links]');
+      if (!query) return die('Usage: slack-cli search <query> [--limit N] [--links]');
 
       let collected = 0;
       let page = 1;
       while (collected < limit) {
         const count = Math.min(limit - collected, 100);
         const res = await slack('search.messages', { query, count, page });
-        if (!res.ok) return console.error('Error:', res.error);
+        if (!res.ok) return die('Error:', res.error);
         const matches = res.messages?.matches || [];
         if (matches.length === 0) break;
         for (const match of matches) {
@@ -360,7 +365,7 @@ async function main() {
       const threadTs = args[3]; // Opcional: se for reply numa thread
       
       if (!channelId || !messageTs) {
-        return console.error('Usage: slack-cli permalink <channel_id> <message_ts> [thread_ts]\n\nFor thread replies, pass the parent thread_ts as third arg to get working link.');
+        return die('Usage: slack-cli permalink <channel_id> <message_ts> [thread_ts]\n\nFor thread replies, pass the parent thread_ts as third arg to get working link.');
       }
       
       console.log(makePermalink(channelId, messageTs, threadTs));
@@ -369,10 +374,10 @@ async function main() {
     
     case 'user': {
       const userId = args[1];
-      if (!userId) return console.error('Usage: slack-cli user <user_id>');
+      if (!userId) return die('Usage: slack-cli user <user_id>');
       
       const user = await getUser(userId);
-      if (!user) return console.error('User not found');
+      if (!user) return die('User not found');
       
       console.log(`Name: ${user.real_name}`);
       console.log(`Display: ${user.profile?.display_name || '-'}`);
@@ -386,7 +391,7 @@ async function main() {
       const search = searchIdx > -1 ? args[searchIdx + 1]?.toLowerCase() : null;
       
       const res = await slack('users.list', { limit: 500 });
-      if (!res.ok) return console.error('Error:', res.error);
+      if (!res.ok) return die('Error:', res.error);
       
       let users = res.members.filter(u => !u.deleted && !u.is_bot);
       
@@ -412,7 +417,7 @@ async function main() {
         types: 'im', 
         limit
       });
-      if (!res.ok) return console.error('Error:', res.error);
+      if (!res.ok) return die('Error:', res.error);
       
       // Buscar info de cada DM em paralelo
       const dms = await Promise.all(res.channels.map(async (dm) => {
@@ -439,7 +444,7 @@ async function main() {
       const limitIdx = args.indexOf('--limit');
       const limit = limitIdx > -1 ? parseInt(args[limitIdx + 1]) : 20;
       
-      if (!userArg) return console.error('Usage: slack-cli dm <dm_id|@handle> [--limit N] [--links]\n\nTip: use "slack-cli dms" to list DM channel IDs');
+      if (!userArg) return die('Usage: slack-cli dm <dm_id|@handle> [--limit N] [--links]\n\nTip: use "slack-cli dms" to list DM channel IDs');
       
       let channelId = userArg;
       
@@ -453,7 +458,7 @@ async function main() {
         
         // Listar DMs e procurar pelo usuário
         const dmsRes = await slack('conversations.list', { types: 'im', limit: 100 });
-        if (!dmsRes.ok) return console.error('Error listing DMs:', dmsRes.error);
+        if (!dmsRes.ok) return die('Error listing DMs:', dmsRes.error);
         
         for (const dm of dmsRes.channels) {
           const user = await getUser(dm.user);
@@ -468,15 +473,15 @@ async function main() {
         }
         
         if (channelId === userArg) {
-          return console.error(`DM not found with: ${userArg}\nTip: use "slack-cli dms" to see available DMs`);
+          return die(`DM not found with: ${userArg}\nTip: use "slack-cli dms" to see available DMs`);
         }
       } else {
-        return console.error('Invalid argument. Use DM channel ID (starts with D) or @handle');
+        return die('Invalid argument. Use DM channel ID (starts with D) or @handle');
       }
       
       // Ler histórico
       const res = await slack('conversations.history', { channel: channelId, limit });
-      if (!res.ok) return console.error('Error:', res.error);
+      if (!res.ok) return die('Error:', res.error);
       
       const messages = res.messages.reverse();
       for (const msg of messages) {
@@ -500,7 +505,7 @@ async function main() {
         if (cursor) params.cursor = cursor;
 
         const res = await slack('reactions.list', params);
-        if (!res.ok) return console.error('Error:', res.error);
+        if (!res.ok) return die('Error:', res.error);
 
         for (const item of res.items || []) {
           if (item.type !== 'message') continue;
@@ -534,7 +539,7 @@ async function main() {
       const filePath = args[2];
 
       if (!channelArg || !filePath) {
-        return console.error('Usage: slack-cli send-rich <channel_id|#channel_name> <file> [--thread TS]\n\nSends file content as rich text with native Slack bullets.\nFormat: Slack mrkdwn — *bold*, :emoji:, <url|text>, - bullets\n\nExamples:\n  slack-cli send-rich #self-tony-franca recap.md --links\n  slack-cli send-rich #channel recap.md --thread 1234567890.123456');
+        return die('Usage: slack-cli send-rich <channel_id|#channel_name> <file> [--thread TS]\n\nSends file content as rich text with native Slack bullets.\nFormat: Slack mrkdwn — *bold*, :emoji:, <url|text>, - bullets\n\nExamples:\n  slack-cli send-rich #self-tony-franca recap.md --links\n  slack-cli send-rich #channel recap.md --thread 1234567890.123456');
       }
 
       // Parse --thread TS option
@@ -547,7 +552,7 @@ async function main() {
       let channelId = channelArg;
       if (!/^[CGD][A-Z0-9]+$/.test(channelArg)) {
         const resolved = await findChannelIdByName(channelArg);
-        if (!resolved) return console.error(`Error: channel not found (${channelArg}).`);
+        if (!resolved) return die(`Error: channel not found (${channelArg}).`);
         channelId = resolved;
       }
 
@@ -556,7 +561,7 @@ async function main() {
       try {
         content = readFileSync(filePath, 'utf-8').trim();
       } catch (e) {
-        return console.error(`Error reading file: ${e.message}`);
+        return die(`Error reading file: ${e.message}`);
       }
 
       const richBlocks = parseRichBlocks(`[${BOT_NAME}]\n${content}`);
@@ -572,7 +577,7 @@ async function main() {
       });
 
       const body = await res.json();
-      if (!body.ok) return console.error('Error:', body.error);
+      if (!body.ok) return die('Error:', body.error);
 
       console.log(`Sent rich message to ${channelId} at ${body.ts}`);
       if (showLinks) {
@@ -586,13 +591,13 @@ async function main() {
       const text = args.slice(2).join(' ').trim();
 
       if (!channelArg || !text) {
-        return console.error('Usage: slack-cli send <channel_id|#channel_name> <message>\n\nExamples:\n  slack-cli send C09HE1GB0H4 "deploy concluído"\n  slack-cli send #self-tony-franca "deploy concluído"');
+        return die('Usage: slack-cli send <channel_id|#channel_name> <message>\n\nExamples:\n  slack-cli send C09HE1GB0H4 "deploy concluído"\n  slack-cli send #self-tony-franca "deploy concluído"');
       }
 
       let channelId = channelArg;
       if (!/^[CGD][A-Z0-9]+$/.test(channelArg)) {
         const resolved = await findChannelIdByName(channelArg);
-        if (!resolved) return console.error(`Error: channel not found (${channelArg}).`);
+        if (!resolved) return die(`Error: channel not found (${channelArg}).`);
         channelId = resolved;
       }
 
@@ -607,7 +612,7 @@ async function main() {
       });
 
       const body = await res.json();
-      if (!body.ok) return console.error('Error:', body.error);
+      if (!body.ok) return die('Error:', body.error);
 
       console.log(`Sent to ${channelId} at ${body.ts}`);
       if (showLinks) {
@@ -619,13 +624,13 @@ async function main() {
     case 'digest': {
       const channelArg = args[1];
       if (!channelArg) {
-        return console.error('Usage: slack-cli digest <channel_id|#channel_name> [--date YYYY-MM-DD] [--links]\n\nFetches all messages from a channel for a given day, grouped by thread.\nDefaults to yesterday if --date is not provided.');
+        return die('Usage: slack-cli digest <channel_id|#channel_name> [--date YYYY-MM-DD] [--links]\n\nFetches all messages from a channel for a given day, grouped by thread.\nDefaults to yesterday if --date is not provided.');
       }
 
       let channelId = channelArg;
       if (!/^[CGD][A-Z0-9]+$/.test(channelArg)) {
         const resolved = await findChannelIdByName(channelArg);
-        if (!resolved) return console.error(`Error: channel not found (${channelArg}).`);
+        if (!resolved) return die(`Error: channel not found (${channelArg}).`);
         channelId = resolved;
       }
 
@@ -649,7 +654,7 @@ async function main() {
         const params = { channel: channelId, oldest: dayStart, latest: dayEnd, limit: 200, inclusive: true };
         if (cursor) params.cursor = cursor;
         const res = await slack('conversations.history', params);
-        if (!res.ok) return console.error('Error:', res.error);
+        if (!res.ok) return die('Error:', res.error);
         allMessages = allMessages.concat(res.messages || []);
         cursor = res.response_metadata?.next_cursor;
         if (!cursor) break;
@@ -776,4 +781,4 @@ Note: For threads, --links shows link for ALL messages (needed for journal refer
   }
 }
 
-main().catch(console.error);
+main().catch(e => { console.error(e); process.exit(1); });
