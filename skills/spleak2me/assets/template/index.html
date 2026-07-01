@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>spleak2me</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="top-head">
+      <div>
+        <div class="eyebrow" id="doc-eyebrow">Guided reading · top-down</div>
+        <h1 id="doc-title"></h1>
+        <div class="sub" id="doc-sub"></div>
+      </div>
+      <a class="src" id="doc-src" target="_blank" rel="noopener" hidden>source ↗</a>
+    </div>
+    <div class="progress">
+      <div class="progress-bar"><span id="progress-fill"></span></div>
+      <div class="progress-meta"><span id="progress-count">0/0</span> <span id="lbl-understood">understood</span> · <button id="reset" class="reset">reset</button></div>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+  <nav id="list" class="list" aria-label="Sections"></nav>
+  <section id="detail" class="detail">
+    <div class="detail-empty" id="detail-empty">
+      <p id="doc-intro"></p>
+      <p class="hint" id="doc-hint"></p>
+    </div>
+    <article id="detail-body" class="detail-body" hidden></article>
+  </section>
+</main>
+
+<script src="content.js"></script>
+<script src="audio-manifest.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
