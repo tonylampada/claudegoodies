@@ -11,6 +11,24 @@
   var understood = load();
   var current = null;      // active L1 id
   var playing = null;      // active Audio element
+  var audios = [];         // every Audio created, for global speed control
+
+  var RATES = [1, 1.2, 1.5, 2];
+  var rate = loadRate();
+  function loadRate() {
+    var r = parseFloat(localStorage.getItem(LS_KEY + ':rate'));
+    return RATES.indexOf(r) >= 0 ? r : 1;
+  }
+  function rateLabel(r) { return (String(r).indexOf('.') < 0 ? r : r) + '×'; }
+  function applyRate() {
+    audios.forEach(function (a) { a.playbackRate = rate; });
+    document.querySelectorAll('.aud .speed').forEach(function (b) { b.textContent = rateLabel(rate); });
+    try { localStorage.setItem(LS_KEY + ':rate', String(rate)); } catch (e) {}
+  }
+  function cycleRate() {
+    rate = RATES[(RATES.indexOf(rate) + 1) % RATES.length];
+    applyRate();
+  }
 
   function load() {
     try { return new Set(JSON.parse(localStorage.getItem(LS_KEY) || '[]')); }
@@ -57,12 +75,16 @@
     var fill = document.createElement('i'); seek.appendChild(fill);
     var time = document.createElement('div'); time.className = 'time'; time.textContent = '0:00';
     var lbl = document.createElement('div'); lbl.className = 'lbl'; lbl.textContent = T('whyItMatters', '🎧 why it matters');
-    wrap.appendChild(btn); wrap.appendChild(lbl); wrap.appendChild(seek); wrap.appendChild(time);
+    var speed = document.createElement('button'); speed.className = 'speed'; speed.type = 'button';
+    speed.textContent = rateLabel(rate); speed.setAttribute('aria-label', T('speedLabel', 'playback speed'));
+    speed.addEventListener('click', function (e) { e.stopPropagation(); cycleRate(); });
+    wrap.appendChild(btn); wrap.appendChild(lbl); wrap.appendChild(seek); wrap.appendChild(time); wrap.appendChild(speed);
 
     var audio = null;
     function ensure() {
       if (audio) return audio;
       audio = new Audio(AUDIO[id]); audio.preload = 'none';
+      audio.playbackRate = rate; audios.push(audio);
       audio.addEventListener('timeupdate', function () {
         if (audio.duration) fill.style.width = (audio.currentTime / audio.duration * 100) + '%';
         time.textContent = fmt(audio.duration ? audio.duration - audio.currentTime : 0);

@@ -37,7 +37,9 @@ inline expandable block — use it for code/JSON/tables/fine print, not for pros
 - `lang` — BCP-47-ish, e.g. `"en"`, `"pt"`. **Drives the TTS voice** and `<html lang>`. Default `"en"`.
 - `source` — optional URL; shows a "source ↗" link.
 - `ui` — optional map to localize UI micro-labels so they match `lang`. Keys (all optional):
-  `eyebrow, understood, gotIt, gotItQ, whyItMatters, viewJson, viewDetail, back, hint, reset, resetConfirm, sourceLabel, bigPicture`.
+  `eyebrow, understood, gotIt, gotItQ, whyItMatters, viewJson, viewDetail, back, hint, reset, resetConfirm, sourceLabel, bigPicture, speedLabel`.
+- Each audio player has a **playback-speed** button (cycles `1× → 1.2× → 1.5× → 2×`). The choice is global
+  (all players) and persisted in `localStorage`; no authoring needed. `speedLabel` sets its aria-label.
 - `rate` (edge-tts, e.g. `"+6%"`) / `wpm` (say, e.g. `180`) / `voice` (raw backend voice override) — optional.
 
 **section (L1)**
