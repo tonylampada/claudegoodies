@@ -1,6 +1,24 @@
 #!/usr/bin/env node
-// bridge server — agent OS board. Node built-ins only, no deps.
+// bridge server — generic agent board. Node built-ins only, zero deps.
 // Usage: node server.js --port 4777 --board default --host 0.0.0.0
+//
+// Data model v2 (one JSON file per board, ~/.bridge/boards/<name>.json):
+//   board = { title, subtitle, updated, seq,
+//             columns: [{id, title}],                       // owned state, ordered
+//             cards:   [{id, title, column, labels[], attributes{}, body,
+//                        created, updated, threadStart,
+//                        events: [{seq, ts, level, kind, text, actor}],
+//                        thread: [{author, text, ts}] }],
+//             chat:    [{author, text, ts}],
+//             events:  [{seq, ts, level, kind, text, actor, card?, cardTitle?}], // board-level
+//             labels:  [{name, color}],                     // user-owned registry
+//             reads:   { <user>: { notifSeq, notifSeqs[], threads: {<target>: ts} } } }
+//
+// Events are append-only and carry a global monotonic seq. The unified stream =
+// board.events + every card's events, ordered by seq. Notifications are the
+// level-1 slice of that stream; read state persists in board.reads (server-side).
+// Kill = archive: the card is snapshotted to <name>.archive.jsonl (append-only)
+// and removed from the board. No destructive delete.
 'use strict';
 
 const http = require('http');
@@ -10,16 +28,16 @@ const os = require('os');
 
 // ---------- args ----------
 function parseArgs(argv) {
-  const opts = { port: 4777, board: 'default', host: '0.0.0.0' };
+  const o = { port: 4777, board: 'default', host: '0.0.0.0' };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--port') opts.port = parseInt(argv[++i], 10);
-    else if (argv[i] === '--board') opts.board = argv[++i];
-    else if (argv[i] === '--host') opts.host = argv[++i];
+    if (argv[i] === '--port') o.port = parseInt(argv[++i], 10);
+    else if (argv[i] === '--board') o.board = argv[++i];
+    else if (argv[i] === '--host') o.host = argv[++i];
   }
-  if (!Number.isInteger(opts.port) || opts.port <= 0) { console.error('bad --port'); process.exit(1); }
-  if (!opts.host) { console.error('bad --host'); process.exit(1); }
-  if (!/^[\w.-]+$/.test(opts.board)) { console.error('bad --board (use [A-Za-z0-9_.-])'); process.exit(1); }
-  return opts;
+  if (!Number.isInteger(o.port) || o.port <= 0) { console.error('bad --port'); process.exit(1); }
+  if (!o.host) { console.error('bad --host'); process.exit(1); }
+  if (!/^[\w.-]+$/.test(o.board)) { console.error('bad --board (use [A-Za-z0-9_.-])'); process.exit(1); }
+  return o;
 }
 const opts = parseArgs(process.argv.slice(2));
 
@@ -27,13 +45,14 @@ const opts = parseArgs(process.argv.slice(2));
 const BRIDGE_DIR = path.join(os.homedir(), '.bridge');
 const BOARDS_DIR = path.join(BRIDGE_DIR, 'boards');
 const BOARD_FILE = path.join(BOARDS_DIR, opts.board + '.json');
+const ARCHIVE_FILE = path.join(BOARDS_DIR, opts.board + '.archive.jsonl');
 const FEEDBACK_FILE = path.join(BOARDS_DIR, opts.board + '.feedback.jsonl');
 const PID_FILE = path.join(BRIDGE_DIR, 'server-' + opts.port + '.pid');
 const CONFIG_FILE = path.join(BRIDGE_DIR, 'config.json');
-const UI_FILE = path.join(__dirname, 'ui.html');
+const UI_DIR = path.join(__dirname, 'ui');
 fs.mkdirSync(BOARDS_DIR, { recursive: true });
 
-// ---------- user config (~/.bridge/config.json, read per-request; defensive parse) ----------
+// ---------- user config (~/.bridge/config.json; read per-request, defensive) ----------
 function userConfig() {
   try {
     const c = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
@@ -61,10 +80,34 @@ for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { cleanup(); proc
 // ---------- board state ----------
 function now() { return new Date().toISOString(); }
 function defaultBoard() {
-  return { title: opts.board, subtitle: '', updated: now(), columns: [], cards: [], chat: [], labels: [] };
+  return {
+    title: opts.board, subtitle: '', updated: now(), seq: 0,
+    columns: [], cards: [], chat: [], events: [], labels: [], reads: {},
+  };
+}
+function normalizeBoard(doc) {
+  const b = Object.assign(defaultBoard(), doc);
+  if (!Array.isArray(b.columns)) b.columns = [];
+  if (!Array.isArray(b.cards)) b.cards = [];
+  if (!Array.isArray(b.chat)) b.chat = [];
+  if (!Array.isArray(b.events)) b.events = [];
+  if (!Array.isArray(b.labels)) b.labels = [];
+  if (!b.reads || typeof b.reads !== 'object') b.reads = {};
+  for (const c of b.cards) {
+    if (!Array.isArray(c.events)) c.events = [];
+    if (!Array.isArray(c.thread)) c.thread = [];
+    if (!Array.isArray(c.labels)) c.labels = [];
+    if (!c.attributes || typeof c.attributes !== 'object') c.attributes = {};
+  }
+  // seq must top every stored event (defensive after hand edits)
+  let max = b.seq || 0;
+  for (const e of b.events) if (e.seq > max) max = e.seq;
+  for (const c of b.cards) for (const e of c.events) if (e.seq > max) max = e.seq;
+  b.seq = max;
+  return b;
 }
 function loadBoard() {
-  try { return Object.assign(defaultBoard(), JSON.parse(fs.readFileSync(BOARD_FILE, 'utf8'))); }
+  try { return normalizeBoard(JSON.parse(fs.readFileSync(BOARD_FILE, 'utf8'))); }
   catch (e) { return defaultBoard(); }
 }
 let board = loadBoard();
@@ -75,16 +118,23 @@ function saveBoard() {
   fs.renameSync(tmp, BOARD_FILE);
 }
 
-// ---------- label registry (user-owned, like card labels; persisted in board json) ----------
+// ---------- events ----------
+const KINDS = ['alert', 'question', 'handoff', 'success', 'info'];
+function mkEvent(body, defaults) {
+  const level = body.level === 2 ? 2 : body.level === 1 ? 1 : (defaults.level || 2);
+  let kind = KINDS.includes(body.kind) ? body.kind : (defaults.kind || 'info');
+  return {
+    seq: ++board.seq, ts: now(), level, kind,
+    text: String(body.text || '').slice(0, 2000),
+    actor: String(body.actor || defaults.actor || 'agent').slice(0, 60),
+  };
+}
+
+// ---------- label registry (user-owned; persisted in board json) ----------
 const LABEL_PALETTE = ['#4cc2ff', '#2fbf71', '#e2b93b', '#c678dd', '#e2795b', '#56b6c2', '#98c379', '#e06c75'];
 function validColor(c) { return typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : null; }
-function labelIndex(name) {
-  if (!Array.isArray(board.labels)) board.labels = [];
-  return board.labels.findIndex((l) => l && l.name === name);
-}
-// Auto-register unknown card label names with a default palette color.
+function labelIndex(name) { return board.labels.findIndex((l) => l && l.name === name); }
 function registerCardLabels() {
-  if (!Array.isArray(board.labels)) board.labels = [];
   for (const c of board.cards) {
     for (const n of c.labels || []) {
       if (typeof n === 'string' && n && labelIndex(n) < 0) {
@@ -94,14 +144,14 @@ function registerCardLabels() {
   }
 }
 
-// ---------- feedback queue (durable jsonl, monotonic seq) ----------
+// ---------- feedback queue (user -> agent; durable jsonl, monotonic seq) ----------
 let feedback = [];
 try {
   feedback = fs.readFileSync(FEEDBACK_FILE, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 } catch (e) {}
-let seq = feedback.length ? feedback[feedback.length - 1].seq : 0;
-function pushFeedback(target, text) {
-  const ev = { seq: ++seq, target, text, ts: now() };
+let fseq = feedback.length ? feedback[feedback.length - 1].seq : 0;
+function pushFeedback(rec) {
+  const ev = Object.assign({ seq: ++fseq, ts: now() }, rec);
   feedback.push(ev);
   fs.appendFileSync(FEEDBACK_FILE, JSON.stringify(ev) + '\n');
   flushPollers();
@@ -116,7 +166,7 @@ function flushPollers() {
     const evs = feedbackSince(p.since);
     if (!evs.length) return true;
     clearTimeout(p.timer);
-    sendJson(p.res, 200, { events: evs, cursor: seq });
+    sendJson(p.res, 200, { events: evs, cursor: fseq });
     return false;
   });
 }
@@ -129,9 +179,7 @@ function broadcast() {
 }
 setInterval(() => { for (const res of sseClients) res.write(': ping\n\n'); }, 25000).unref();
 
-// ---------- awaiting-agent tracking ----------
-// In-memory by design: "awaiting reply" is a transient UI signal. A restart clears it,
-// while the durable feedback jsonl still carries the messages themselves.
+// ---------- awaiting-agent tracking (transient typing indicator) ----------
 const awaiting = new Set(); // targets with user feedback not yet answered by an agent message
 function statusEvent() {
   return 'event: status\ndata: ' + JSON.stringify({ awaiting: Array.from(awaiting) }) + '\n\n';
@@ -142,7 +190,7 @@ function setAwaiting(target, on) {
   if (on) awaiting.add(target);
   if (changed) broadcastStatus();
 }
-function pruneAwaiting() { // drop targets whose card/thread no longer exists
+function pruneAwaiting() {
   let changed = false;
   for (const t of Array.from(awaiting)) if (!threadFor(t)) { awaiting.delete(t); changed = true; }
   if (changed) broadcastStatus();
@@ -162,144 +210,315 @@ function readBody(req) {
     req.on('error', reject);
   });
 }
+function findCard(id) { return board.cards.find((c) => c.id === id); }
 function threadFor(target) {
   if (target === 'chat') return board.chat;
   const m = /^card:(.+)$/.exec(target || '');
   if (m) {
-    const card = board.cards.find((c) => c.id === m[1]);
+    const card = findCard(m[1]);
     if (card) return (card.thread = card.thread || []);
   }
   return null;
 }
-function touchCard(target) { // thread activity refreshes the card's recency stamp
-  const m = /^card:(.+)$/.exec(target || '');
-  const card = m && board.cards.find((c) => c.id === m[1]);
-  if (card) card.updated = now();
+function columnTitle(id) {
+  const c = board.columns.find((k) => k.id === id);
+  return c ? c.title : id;
 }
-// Change-aware recency: deep-compare cards ignoring volatile fields (updated, thread),
-// key-order-insensitive, so identical mirror syncs never bump "updated".
-function sortKeys(v) {
-  if (Array.isArray(v)) return v.map(sortKeys);
-  if (v && typeof v === 'object') {
-    const o = {};
-    for (const k of Object.keys(v).sort()) o[k] = sortKeys(v[k]);
-    return o;
-  }
-  return v;
+function slug(s) {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'card';
 }
-function sameCardContent(a, b) {
-  const strip = (c) => {
-    const o = Object.assign({}, c);
-    delete o.updated; delete o.thread;
-    return o;
+function newCardId(title) {
+  const base = slug(title);
+  if (!findCard(base)) return base;
+  for (let i = 2; ; i++) if (!findCard(base + '-' + i)) return base + '-' + i;
+}
+function userReads(user) {
+  const u = String(user || 'user').slice(0, 60);
+  if (!board.reads[u]) board.reads[u] = { notifSeq: 0, notifSeqs: [], threads: {} };
+  const r = board.reads[u];
+  if (!Array.isArray(r.notifSeqs)) r.notifSeqs = [];
+  if (!r.threads || typeof r.threads !== 'object') r.threads = {};
+  return r;
+}
+// The unified stream: board-level events + every card's events, by seq.
+function allEvents() {
+  const out = [];
+  for (const e of board.events) out.push(e);
+  for (const c of board.cards) for (const e of c.events) out.push(Object.assign({ card: c.id, cardTitle: c.title }, e));
+  out.sort((a, b) => a.seq - b.seq);
+  return out;
+}
+
+// ---------- card mutations ----------
+function createCard(body, actorDefault) {
+  const title = String(body.title || '').trim();
+  if (!title) return { error: 'title required' };
+  const id = body.id ? String(body.id) : newCardId(title);
+  if (!/^[\w][\w.:-]*$/.test(id)) return { error: 'bad card id (use [A-Za-z0-9_.:-])' };
+  if (findCard(id)) return { error: 'card exists: ' + id, code: 409 };
+  const column = body.column ? String(body.column) : (board.columns[0] && board.columns[0].id);
+  if (!column || !board.columns.some((c) => c.id === column)) return { error: 'unknown column: ' + column };
+  const actor = String(body.actor || actorDefault || 'agent').slice(0, 60);
+  const card = {
+    id, title: title.slice(0, 200), column,
+    labels: Array.isArray(body.labels) ? body.labels.filter((l) => typeof l === 'string' && l) : [],
+    attributes: (body.attributes && typeof body.attributes === 'object') ? body.attributes : {},
+    body: typeof body.body === 'string' ? body.body : '',
+    created: now(), updated: now(), threadStart: null,
+    events: [], thread: [],
   };
-  return JSON.stringify(sortKeys(strip(a))) === JSON.stringify(sortKeys(strip(b)));
+  card.events.push(mkEvent({ text: 'created in ' + columnTitle(column), actor, level: 2 }, { kind: 'info' }));
+  board.cards.push(card);
+  registerCardLabels();
+  if (actor !== 'agent') {
+    pushFeedback({ kind: 'card-created', target: 'card:' + id, text: title, column });
+    setAwaiting('card:' + id, true);
+  }
+  return { card };
 }
-// Merge a patch onto an existing card; "updated" = last REAL change: an explicit stamp
-// wins, unchanged content keeps the old stamp, changed content stamps now().
-function mergeCard(prevCard, patch) {
-  const merged = Object.assign({}, prevCard, patch);
-  merged.updated = patch.updated ||
-    (sameCardContent(merged, prevCard) ? prevCard.updated || now() : now());
-  return merged;
+
+function moveCard(card, body, actorDefault) {
+  const column = String(body.column || '');
+  if (!board.columns.some((c) => c.id === column)) return { error: 'unknown column: ' + column };
+  const actor = String(body.actor || actorDefault || 'agent').slice(0, 60);
+  if (column === card.column) return { ok: true, unchanged: true };
+  const from = card.column;
+  card.column = column;
+  card.updated = now();
+  // A move is a deliberate act: it always lands on the timeline. Default level:
+  // an agent move notifies the human (level 1 handoff); a human's own move is level 2.
+  const ev = mkEvent(
+    { level: body.level, kind: body.kind, actor, text: columnTitle(from) + ' → ' + columnTitle(column) },
+    { level: actor === 'agent' ? 1 : 2, kind: 'handoff' });
+  card.events.push(ev);
+  if (actor !== 'agent') pushFeedback({ kind: 'card-moved', target: 'card:' + card.id, text: card.title, from, column });
+  return { ok: true, event: ev };
+}
+
+function patchCard(card, body) {
+  if (body.title !== undefined) card.title = String(body.title).slice(0, 200);
+  if (body.body !== undefined) card.body = String(body.body);
+  if (Array.isArray(body.labels)) card.labels = body.labels.filter((l) => typeof l === 'string' && l);
+  if (body.attributes && typeof body.attributes === 'object') {
+    for (const [k, v] of Object.entries(body.attributes)) {
+      if (v === null) delete card.attributes[k];
+      else card.attributes[k] = v;
+    }
+  }
+  card.updated = now();
+  registerCardLabels();
+}
+
+function archiveCard(card, body, actorDefault) {
+  const actor = String((body && body.actor) || actorDefault || 'agent').slice(0, 60);
+  const reason = String((body && body.reason) || '').slice(0, 500);
+  const rec = { ts: now(), actor, reason, card };
+  fs.appendFileSync(ARCHIVE_FILE, JSON.stringify(rec) + '\n');
+  board.cards = board.cards.filter((c) => c.id !== card.id);
+  // The kill lands on the board-level stream (the card is gone) with a card reference.
+  const ev = mkEvent(
+    { level: body && body.level, kind: body && body.kind, actor, text: reason || 'archived: ' + card.title },
+    { level: 1, kind: 'success' });
+  ev.card = card.id; ev.cardTitle = card.title; ev.archived = true;
+  board.events.push(ev);
+  return { ok: true, event: ev };
+}
+
+// ---------- static ui ----------
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
+};
+function serveStatic(res, rel) {
+  const file = path.normalize(path.join(UI_DIR, rel));
+  if (!file.startsWith(UI_DIR + path.sep) && file !== path.join(UI_DIR, 'index.html')) {
+    return sendJson(res, 404, { error: 'not found' });
+  }
+  let data;
+  try { data = fs.readFileSync(file); } catch (e) { return sendJson(res, 404, { error: 'not found' }); }
+  res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+  res.end(data);
 }
 
 // ---------- server ----------
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
-  const route = req.method + ' ' + url.pathname;
+  const p = url.pathname;
+  const route = req.method + ' ' + p;
   try {
-    if (route === 'GET /') {
-      const html = fs.readFileSync(UI_FILE);
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(html);
-    }
+    // ----- ui -----
+    if (route === 'GET /') return serveStatic(res, 'index.html');
+    if (req.method === 'GET' && p.startsWith('/ui/')) return serveStatic(res, p.slice(4));
+
+    // ----- reads -----
     if (route === 'GET /api/board') return sendJson(res, 200, board);
     if (route === 'GET /api/config') return sendJson(res, 200, userConfig());
     if (route === 'GET /api/status') {
-      return sendJson(res, 200, { board: opts.board, port: opts.port, cards: board.cards.length, feedback_seq: seq, awaiting: Array.from(awaiting), pid: process.pid });
+      return sendJson(res, 200, {
+        board: opts.board, port: opts.port, cards: board.cards.length, seq: board.seq,
+        feedback_seq: fseq, awaiting: Array.from(awaiting), pid: process.pid,
+      });
     }
-    if (route === 'POST /api/board') {
-      const doc = JSON.parse(await readBody(req));
-      const prev = board;
-      board = Object.assign(defaultBoard(), doc);
-      // labels are user-owned: a full sync whose cards omit the field inherits the old labels,
-      // and a doc without a labels registry inherits the old registry
-      for (const c of board.cards) {
-        if (!c || !c.id) continue;
-        const old = prev.cards.find((o) => o.id === c.id);
-        if (c.labels === undefined && old && old.labels) c.labels = old.labels;
-        // keep recency meaningful: when the doc omits updated, an unchanged card keeps
-        // its old stamp (mirror syncs are timestamp-neutral); changed or new stamps now()
-        if (!c.updated) {
-          c.updated = old ? (sameCardContent(c, old) ? old.updated || now() : now()) : now();
-        }
-      }
-      if (doc.labels === undefined) board.labels = Array.isArray(prev.labels) ? prev.labels : [];
-      registerCardLabels();
-      saveBoard(); broadcast(); pruneAwaiting();
-      return sendJson(res, 200, { ok: true, updated: board.updated });
+    if (route === 'GET /api/archive') {
+      let recs = [];
+      try { recs = fs.readFileSync(ARCHIVE_FILE, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch (e) {}
+      const n = parseInt(url.searchParams.get('limit') || '50', 10) || 50;
+      return sendJson(res, 200, { archive: recs.slice(-n).reverse() });
     }
-    if (route === 'PATCH /api/cards') {
-      const body = JSON.parse(await readBody(req));
-      // Optional top-level columns: replaces board.columns only (cards/threads/chat/labels
-      // untouched). Present = validate+set; absent = untouched. Setting identical columns is
-      // a guarded no-op so callers can push the same frame every sync without churn.
-      let columnsChanged = false;
-      if (body.columns !== undefined) {
-        if (!Array.isArray(body.columns) ||
-            !body.columns.every((c) => c && typeof c.id === 'string' && typeof c.title === 'string')) {
-          return sendJson(res, 400, { error: 'columns must be [{id:string,title:string}]' });
-        }
-        const next = body.columns.map((c) => ({ id: c.id, title: c.title }));
-        if (JSON.stringify(next) !== JSON.stringify((board.columns || []).map((c) => ({ id: c.id, title: c.title })))) {
-          board.columns = next;
-          columnsChanged = true;
-        }
+    if (route === 'GET /api/notifications') {
+      const r = userReads(url.searchParams.get('user'));
+      const items = allEvents().filter((e) => e.level === 1).reverse();
+      for (const e of items) e.read = e.seq <= r.notifSeq || r.notifSeqs.includes(e.seq);
+      return sendJson(res, 200, { items, unread: items.filter((e) => !e.read).length });
+    }
+
+    // ----- cards -----
+    if (route === 'POST /api/cards') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const r = createCard(body);
+      if (r.error) return sendJson(res, r.code || 400, { error: r.error });
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true, card: r.card });
+    }
+    const cardRoute = /^\/api\/cards\/([^/]+)(\/(move|events|archive))?$/.exec(p);
+    if (cardRoute) {
+      const card = findCard(decodeURIComponent(cardRoute[1]));
+      if (!card) return sendJson(res, 404, { error: 'unknown card: ' + decodeURIComponent(cardRoute[1]) });
+      const sub = cardRoute[3];
+      if (!sub && req.method === 'GET') return sendJson(res, 200, card);
+      if (!sub && req.method === 'PATCH') {
+        patchCard(card, JSON.parse(await readBody(req) || '{}'));
+        saveBoard(); broadcast();
+        return sendJson(res, 200, { ok: true, card });
       }
-      const hasCardOps = (body.update && body.update.length) ||
-        (body.upsert && body.upsert.length) || (body.remove && body.remove.length);
-      // columns-only PATCH with identical columns: full no-op, nothing saved or broadcast.
-      if (!hasCardOps && body.columns !== undefined && !columnsChanged) {
+      if (sub === 'move' && req.method === 'POST') {
+        const r = moveCard(card, JSON.parse(await readBody(req) || '{}'));
+        if (r.error) return sendJson(res, 400, { error: r.error });
+        saveBoard(); broadcast();
+        return sendJson(res, 200, r);
+      }
+      if (sub === 'events' && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req) || '{}');
+        if (!String(body.text || '').trim()) return sendJson(res, 400, { error: 'text required' });
+        const ev = mkEvent(body, { level: 2, kind: 'info' });
+        card.events.push(ev);
+        card.updated = now();
+        saveBoard(); broadcast();
+        return sendJson(res, 200, { ok: true, event: ev });
+      }
+      if (sub === 'archive' && req.method === 'POST') {
+        const r = archiveCard(card, JSON.parse(await readBody(req) || '{}'));
+        saveBoard(); broadcast(); pruneAwaiting();
+        return sendJson(res, 200, r);
+      }
+      return sendJson(res, 405, { error: 'method not allowed' });
+    }
+
+    // ----- board-level events (free-form notify) -----
+    if (route === 'POST /api/events') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      if (!String(body.text || '').trim()) return sendJson(res, 400, { error: 'text required' });
+      const ev = mkEvent(body, { level: 1, kind: 'info' });
+      board.events.push(ev);
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true, event: ev });
+    }
+
+    // ----- columns (owned state; idempotent replace) -----
+    if (route === 'PUT /api/columns') {
+      const cols = JSON.parse(await readBody(req) || 'null');
+      if (!Array.isArray(cols) || !cols.every((c) => c && typeof c.id === 'string' && typeof c.title === 'string')) {
+        return sendJson(res, 400, { error: 'columns must be [{id:string,title:string}]' });
+      }
+      const next = cols.map((c) => ({ id: c.id, title: c.title }));
+      if (JSON.stringify(next) === JSON.stringify(board.columns)) {
         return sendJson(res, 200, { ok: true, columns: board.columns.length, unchanged: true });
       }
-      // update: merge onto EXISTING cards only (never creates). Used by the UI for
-      // user-owned fields like labels, so a typo'd id can't create a phantom card.
-      for (const card of body.update || []) {
-        if (!card.id) return sendJson(res, 400, { error: 'card without id' });
-        const i = board.cards.findIndex((c) => c.id === card.id);
-        if (i < 0) return sendJson(res, 404, { error: 'unknown card: ' + card.id });
-        if (!card.thread) card.thread = board.cards[i].thread || [];
-        board.cards[i] = mergeCard(board.cards[i], card);
-      }
-      for (const card of body.upsert || []) {
-        if (!card.id) return sendJson(res, 400, { error: 'card without id' });
-        const i = board.cards.findIndex((c) => c.id === card.id);
-        if (i >= 0) {
-          // merge: keep existing thread unless the upsert brings one
-          if (!card.thread) card.thread = board.cards[i].thread || [];
-          board.cards[i] = mergeCard(board.cards[i], card);
-        } else {
-          card.thread = card.thread || [];
-          card.updated = card.updated || now();
-          board.cards.push(card);
-        }
-      }
-      for (const id of body.remove || []) board.cards = board.cards.filter((c) => c.id !== id);
-      registerCardLabels();
-      saveBoard(); broadcast(); pruneAwaiting();
-      return sendJson(res, 200, { ok: true, cards: board.cards.length });
+      board.columns = next;
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true, columns: board.columns.length });
     }
+
+    // ----- board meta (title/subtitle) -----
+    if (route === 'PATCH /api/board') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      if (body.title !== undefined) board.title = String(body.title).slice(0, 120);
+      if (body.subtitle !== undefined) board.subtitle = String(body.subtitle).slice(0, 300);
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // ----- chat -----
+    if (route === 'POST /api/message') { // agent -> human
+      const body = JSON.parse(await readBody(req) || '{}');
+      const target = body.target || 'chat';
+      const thread = threadFor(target);
+      if (!thread) return sendJson(res, 404, { error: 'unknown target: ' + target });
+      const text = String(body.text_md || body.text || '');
+      if (!text.trim()) return sendJson(res, 400, { error: 'text required' });
+      const msg = { author: String(body.author || 'agent').slice(0, 60), text, ts: now() };
+      thread.push(msg);
+      const m = /^card:(.+)$/.exec(target);
+      if (m) {
+        const card = findCard(m[1]);
+        if (card) { card.updated = now(); if (!card.threadStart) card.threadStart = msg.ts; }
+      } else {
+        // A free-form agent message in the main chat is a level-1 notification.
+        const ev = mkEvent({ text: text.slice(0, 200), actor: msg.author, level: body.level, kind: body.kind }, { level: 1, kind: 'info' });
+        board.events.push(ev);
+      }
+      saveBoard(); broadcast(); setAwaiting(target, false);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (route === 'POST /api/feedback') { // human -> agent
+      const body = JSON.parse(await readBody(req) || '{}');
+      const target = body.target || 'chat';
+      const thread = threadFor(target);
+      if (!thread) return sendJson(res, 404, { error: 'unknown target: ' + target });
+      const text = String(body.text || '');
+      if (!text.trim()) return sendJson(res, 400, { error: 'text required' });
+      const msg = { author: 'user', text, ts: now() };
+      thread.push(msg);
+      const m = /^card:(.+)$/.exec(target);
+      if (m) {
+        const card = findCard(m[1]);
+        if (card) { card.updated = now(); if (!card.threadStart) card.threadStart = msg.ts; }
+      }
+      const ev = pushFeedback({ kind: 'message', target, text });
+      saveBoard(); broadcast(); setAwaiting(target, true);
+      return sendJson(res, 200, { ok: true, seq: ev.seq });
+    }
+
+    // ----- read state (persisted server-side, per user) -----
+    if (route === 'POST /api/notifications/read') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const r = userReads(body.user);
+      if (body.all) { r.notifSeq = board.seq; r.notifSeqs = []; }
+      else if (Array.isArray(body.seqs)) {
+        for (const s of body.seqs) if (Number.isInteger(s) && s > r.notifSeq && !r.notifSeqs.includes(s)) r.notifSeqs.push(s);
+      }
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true });
+    }
+    if (route === 'POST /api/read') { // thread read marker: {user?, target, ts?}
+      const body = JSON.parse(await readBody(req) || '{}');
+      const r = userReads(body.user);
+      const target = String(body.target || '');
+      if (!/^(chat|card:.+)$/.test(target)) return sendJson(res, 400, { error: 'bad target' });
+      r.threads[target] = body.ts || now();
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // ----- labels registry -----
     if (route === 'POST /api/labels') {
-      // registry mutations: {create:{name,color?}} | {rename:{from,to}} | {recolor:{name,color}} | {delete:{name}}
-      const b = JSON.parse(await readBody(req));
-      if (!Array.isArray(board.labels)) board.labels = [];
+      const b = JSON.parse(await readBody(req) || '{}');
       if (b.create) {
         const name = String(b.create.name || '').trim();
         if (!name) return sendJson(res, 400, { error: 'label name required' });
         const color = validColor(b.create.color);
         const i = labelIndex(name);
-        if (i >= 0) { if (color) board.labels[i].color = color; } // merge, never duplicate
+        if (i >= 0) { if (color) board.labels[i].color = color; }
         else board.labels.push({ name, color: color || LABEL_PALETTE[board.labels.length % LABEL_PALETTE.length] });
       } else if (b.rename) {
         const from = String(b.rename.from || ''), to = String(b.rename.to || '').trim();
@@ -308,7 +527,7 @@ const server = http.createServer(async (req, res) => {
         if (!to) return sendJson(res, 400, { error: 'new name required' });
         if (to !== from && labelIndex(to) >= 0) return sendJson(res, 400, { error: 'label exists: ' + to });
         board.labels[i].name = to;
-        for (const c of board.cards) { // cascade to every card carrying it
+        for (const c of board.cards) {
           if (Array.isArray(c.labels)) c.labels = c.labels.map((n) => (n === from ? to : n)).filter((n, k, a) => a.indexOf(n) === k);
         }
       } else if (b.recolor) {
@@ -322,7 +541,7 @@ const server = http.createServer(async (req, res) => {
         const i = labelIndex(name);
         if (i < 0) return sendJson(res, 404, { error: 'unknown label: ' + name });
         board.labels.splice(i, 1);
-        for (const c of board.cards) { // cascade removal from every card
+        for (const c of board.cards) {
           if (Array.isArray(c.labels)) c.labels = c.labels.filter((n) => n !== name);
         }
       } else {
@@ -331,39 +550,24 @@ const server = http.createServer(async (req, res) => {
       saveBoard(); broadcast();
       return sendJson(res, 200, { ok: true, labels: board.labels });
     }
-    if (route === 'POST /api/message') {
-      const body = JSON.parse(await readBody(req));
-      const thread = threadFor(body.target);
-      if (!thread) return sendJson(res, 404, { error: 'unknown target: ' + body.target });
-      thread.push({ author: body.author || 'agent', text: String(body.text_md || body.text || ''), ts: now() });
-      touchCard(body.target);
-      saveBoard(); broadcast(); setAwaiting(body.target, false);
-      return sendJson(res, 200, { ok: true });
-    }
-    if (route === 'POST /api/feedback') {
-      const body = JSON.parse(await readBody(req));
-      const thread = threadFor(body.target);
-      if (!thread) return sendJson(res, 404, { error: 'unknown target: ' + body.target });
-      thread.push({ author: 'user', text: String(body.text || ''), ts: now() });
-      touchCard(body.target);
-      const ev = pushFeedback(body.target, String(body.text || ''));
-      saveBoard(); broadcast(); setAwaiting(body.target, true);
-      return sendJson(res, 200, { ok: true, seq: ev.seq });
-    }
+
+    // ----- agent long-poll -----
     if (route === 'GET /api/poll') {
       const since = parseInt(url.searchParams.get('since') || '0', 10) || 0;
       const evs = feedbackSince(since);
-      if (evs.length) return sendJson(res, 200, { events: evs, cursor: seq });
-      if (url.searchParams.get('nowait')) return sendJson(res, 200, { events: [], cursor: seq });
-      const p = { since, res, timer: null };
-      p.timer = setTimeout(() => {
-        pollers = pollers.filter((x) => x !== p);
-        sendJson(res, 200, { events: [], cursor: seq });
+      if (evs.length) return sendJson(res, 200, { events: evs, cursor: fseq });
+      if (url.searchParams.get('nowait')) return sendJson(res, 200, { events: [], cursor: fseq });
+      const poller = { since, res, timer: null };
+      poller.timer = setTimeout(() => {
+        pollers = pollers.filter((x) => x !== poller);
+        sendJson(res, 200, { events: [], cursor: fseq });
       }, 60000);
-      req.on('close', () => { clearTimeout(p.timer); pollers = pollers.filter((x) => x !== p); });
-      pollers.push(p);
+      req.on('close', () => { clearTimeout(poller.timer); pollers = pollers.filter((x) => x !== poller); });
+      pollers.push(poller);
       return;
     }
+
+    // ----- SSE -----
     if (route === 'GET /api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
       res.write('event: board\ndata: ' + JSON.stringify(board) + '\n\n');
@@ -372,6 +576,7 @@ const server = http.createServer(async (req, res) => {
       req.on('close', () => sseClients.delete(res));
       return;
     }
+
     sendJson(res, 404, { error: 'not found' });
   } catch (e) {
     sendJson(res, 400, { error: String(e.message || e) });

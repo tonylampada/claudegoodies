@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// bridge-axi — CLI for the bridge agent OS board. Node built-ins only.
-// Subcommands: open | sync | card | say | poll | status | config | stop
+// bridge-axi — agent CLI for the bridge board. Node built-ins only, zero deps.
+// Run with no args for full usage. Message/body text always goes via --text-file,
+// --body-file, or stdin — never interpolated into a shell command.
 'use strict';
 
 const http = require('http');
@@ -19,24 +20,40 @@ function die(msg) { console.error(msg); process.exit(1); }
 // ---------- args ----------
 const argv = process.argv.slice(2);
 const cmd = argv.shift();
-const opts = { port: 4777, board: 'default', host: '0.0.0.0', textFile: null };
+const opts = {
+  port: 4777, board: 'default', host: '0.0.0.0',
+  textFile: null, bodyFile: null, title: null, column: null, id: null,
+  level: null, kind: null, actor: null, reason: null, attrs: [], labels: [], json: false,
+};
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '--port') opts.port = parseInt(argv[++i], 10);
-  else if (argv[i] === '--board') opts.board = argv[++i];
-  else if (argv[i] === '--host') opts.host = argv[++i];
-  else if (argv[i] === '--text-file') opts.textFile = argv[++i];
-  else positional.push(argv[i]);
+  const a = argv[i];
+  if (a === '--port') opts.port = parseInt(argv[++i], 10);
+  else if (a === '--board') opts.board = argv[++i];
+  else if (a === '--host') opts.host = argv[++i];
+  else if (a === '--text-file') opts.textFile = argv[++i];
+  else if (a === '--body-file') opts.bodyFile = argv[++i];
+  else if (a === '--title') opts.title = argv[++i];
+  else if (a === '--column') opts.column = argv[++i];
+  else if (a === '--id') opts.id = argv[++i];
+  else if (a === '--level') opts.level = parseInt(argv[++i], 10);
+  else if (a === '--kind') opts.kind = argv[++i];
+  else if (a === '--actor') opts.actor = argv[++i];
+  else if (a === '--reason') opts.reason = argv[++i];
+  else if (a === '--attr') opts.attrs.push(argv[++i]);
+  else if (a === '--label') opts.labels.push(argv[++i]);
+  else if (a === '--json') opts.json = true;
+  else positional.push(a);
 }
 const BASE = 'http://127.0.0.1:' + opts.port;
 const CURSOR_FILE = path.join(BOARDS_DIR, opts.board + '.cursor');
 const PID_FILE = path.join(BRIDGE_DIR, 'server-' + opts.port + '.pid');
 const CONFIG_FILE = path.join(BRIDGE_DIR, 'config.json');
 
-// ---------- http helpers ----------
+// ---------- helpers ----------
 function request(method, urlPath, body, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const data = body == null ? null : (typeof body === 'string' ? body : JSON.stringify(body));
+    const data = body == null ? null : JSON.stringify(body);
     const req = http.request(BASE + urlPath, {
       method,
       headers: data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {},
@@ -63,6 +80,16 @@ function readInput(fileArg) {
   const src = fileArg && fileArg !== '-' ? fileArg : 0; // fd 0 = stdin
   return fs.readFileSync(src, 'utf8');
 }
+function parseAttrs(list) {
+  const out = {};
+  for (const kv of list) {
+    const i = kv.indexOf('=');
+    if (i <= 0) die('bad --attr (want key=value): ' + kv);
+    const v = kv.slice(i + 1);
+    out[kv.slice(0, i)] = v === '' ? null : v; // key= deletes the attribute
+  }
+  return out;
+}
 function readCursor() {
   try { return parseInt(fs.readFileSync(CURSOR_FILE, 'utf8'), 10) || 0; } catch (e) { return 0; }
 }
@@ -71,6 +98,7 @@ function writeCursor(n) {
   fs.writeFileSync(CURSOR_FILE, String(n));
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function hhmm(iso) { try { return new Date(iso).toISOString().slice(5, 16).replace('T', ' '); } catch (e) { return ''; } }
 
 // ---------- subcommands ----------
 async function cmdOpen() {
@@ -90,25 +118,143 @@ async function cmdOpen() {
   }
 }
 
-async function cmdSync() {
-  const doc = JSON.parse(readInput(positional[0]));
-  const r = await request('POST', '/api/board', doc);
-  console.log('synced updated=' + r.updated);
+async function cmdColumns() {
+  if (!positional.length) { // print
+    const b = await request('GET', '/api/board');
+    for (const c of b.columns) console.log(c.id + '\t' + c.title);
+    return;
+  }
+  const cols = JSON.parse(readInput(positional[0]));
+  const r = await request('PUT', '/api/columns', cols);
+  console.log('columns=' + r.columns + (r.unchanged ? ' (unchanged)' : ''));
 }
 
-async function cmdCard() {
-  let body = JSON.parse(readInput(positional[0]));
-  if (Array.isArray(body)) body = { upsert: body };
-  else if (!body.upsert && !body.remove && !body.update) body = { upsert: [body] };
-  const r = await request('PATCH', '/api/cards', body);
-  console.log('cards=' + r.cards);
+async function cmdBoard() {
+  const b = await request('GET', '/api/board');
+  if (opts.json) return console.log(JSON.stringify(b, null, 2));
+  console.log(b.title + (b.subtitle ? ' — ' + b.subtitle : ''));
+  for (const col of b.columns) {
+    const cards = b.cards.filter((c) => c.column === col.id);
+    console.log('\n' + col.title + ' (' + cards.length + ')');
+    for (const c of cards) {
+      const at = c.attributes || {};
+      const extras = [at.type, at.owner, (c.labels || []).join(','), at.pr ? 'PR:' + at.pr_state : '']
+        .filter(Boolean).join(' | ');
+      console.log('  ' + c.id + '  ' + c.title + (extras ? '  [' + extras + ']' : ''));
+    }
+  }
+}
+
+async function cmdShow() {
+  const id = positional[0] || die('usage: bridge-axi show <card-id>');
+  const c = await request('GET', '/api/cards/' + encodeURIComponent(id));
+  if (opts.json) return console.log(JSON.stringify(c, null, 2));
+  console.log('# ' + c.title + '  (id=' + c.id + ', column=' + c.column + ')');
+  const at = c.attributes || {};
+  for (const [k, v] of Object.entries(at)) console.log(k + ': ' + v);
+  if ((c.labels || []).length) console.log('labels: ' + c.labels.join(', '));
+  if (c.body) console.log('\n--- body ---\n' + c.body);
+  if ((c.events || []).length) {
+    console.log('\n--- events ---');
+    for (const e of c.events) console.log(hhmm(e.ts) + '  L' + e.level + ' ' + e.kind + '  ' + e.text + '  (' + e.actor + ')');
+  }
+  if ((c.thread || []).length) {
+    console.log('\n--- thread ---');
+    for (const m of c.thread) console.log(hhmm(m.ts) + '  ' + m.author + ': ' + m.text.replace(/\n/g, '\n    '));
+  }
+}
+
+async function cmdThread() {
+  const target = positional[0];
+  if (!target || !/^(chat|card:.+)$/.test(target)) die('usage: bridge-axi thread <chat|card:ID>');
+  const b = await request('GET', '/api/board');
+  let msgs;
+  if (target === 'chat') msgs = b.chat;
+  else {
+    const c = b.cards.find((x) => x.id === target.slice(5));
+    if (!c) die('unknown card: ' + target.slice(5));
+    msgs = c.thread || [];
+  }
+  if (opts.json) return console.log(JSON.stringify(msgs, null, 2));
+  for (const m of msgs) console.log(hhmm(m.ts) + '  ' + m.author + ': ' + m.text.replace(/\n/g, '\n    '));
+}
+
+async function cmdCreate() {
+  if (!opts.title) die('usage: bridge-axi create --title T [--column c] [--id id] [--body-file f|-] [--attr k=v]... [--label l]...');
+  const body = {
+    title: opts.title, actor: opts.actor || 'agent',
+    attributes: parseAttrs(opts.attrs), labels: opts.labels,
+  };
+  if (opts.id) body.id = opts.id;
+  if (opts.column) body.column = opts.column;
+  if (opts.bodyFile) body.body = readInput(opts.bodyFile);
+  const r = await request('POST', '/api/cards', body);
+  console.log('created ' + r.card.id + ' in ' + r.card.column);
+}
+
+async function cmdMove() {
+  const id = positional[0], column = positional[1];
+  if (!id || !column) die('usage: bridge-axi move <card-id> <column> [--actor a] [--level 1|2] [--kind k]');
+  const body = { column, actor: opts.actor || 'agent' };
+  if (opts.level) body.level = opts.level;
+  if (opts.kind) body.kind = opts.kind;
+  const r = await request('POST', '/api/cards/' + encodeURIComponent(id) + '/move', body);
+  console.log(r.unchanged ? 'already in ' + column : 'moved ' + id + ' -> ' + column);
+}
+
+async function cmdPatch() {
+  const id = positional[0];
+  if (!id) die('usage: bridge-axi patch <card-id> [--title T] [--body-file f|-] [--attr k=v]... (--attr k= deletes)');
+  const body = {};
+  if (opts.title !== null) body.title = opts.title;
+  if (opts.bodyFile) body.body = readInput(opts.bodyFile);
+  if (opts.attrs.length) body.attributes = parseAttrs(opts.attrs);
+  if (!Object.keys(body).length) die('nothing to patch (use --title / --body-file / --attr)');
+  await request('PATCH', '/api/cards/' + encodeURIComponent(id), body);
+  console.log('patched ' + id);
+}
+
+async function cmdEvent() {
+  const id = positional[0];
+  if (!id) die('usage: bridge-axi event <card-id> [--level 1|2] [--kind alert|question|handoff|success|info] [--text-file f|-]\n  (text from --text-file or stdin; level 2 = timeline only, level 1 = also notifies)');
+  const text = readInput(opts.textFile).trim();
+  const body = { text, actor: opts.actor || 'agent' };
+  if (opts.level) body.level = opts.level;
+  if (opts.kind) body.kind = opts.kind;
+  const r = await request('POST', '/api/cards/' + encodeURIComponent(id) + '/events', body);
+  console.log('event #' + r.event.seq + ' L' + r.event.level + ' -> ' + id);
+}
+
+async function cmdNotify() {
+  const text = readInput(opts.textFile).trim();
+  const body = { text, actor: opts.actor || 'agent', level: opts.level || 1 };
+  if (opts.kind) body.kind = opts.kind;
+  const r = await request('POST', '/api/events', body);
+  console.log('notified #' + r.event.seq);
+}
+
+async function cmdArchive() {
+  const id = positional[0];
+  if (!id) die('usage: bridge-axi archive <card-id> [--reason "..."] [--kind success|info] [--level 1|2]');
+  const body = { actor: opts.actor || 'agent' };
+  if (opts.reason) body.reason = opts.reason;
+  if (opts.kind) body.kind = opts.kind;
+  if (opts.level) body.level = opts.level;
+  await request('POST', '/api/cards/' + encodeURIComponent(id) + '/archive', body);
+  console.log('archived ' + id);
+}
+
+async function cmdArchived() {
+  const r = await request('GET', '/api/archive?limit=' + (parseInt(positional[0], 10) || 20));
+  if (opts.json) return console.log(JSON.stringify(r.archive, null, 2));
+  for (const rec of r.archive) console.log(hhmm(rec.ts) + '  ' + rec.card.id + '  ' + rec.card.title + (rec.reason ? '  (' + rec.reason + ')' : ''));
 }
 
 async function cmdSay() {
   const target = positional[0];
   if (!target || !/^(chat|card:.+)$/.test(target)) die('usage: bridge-axi say <chat|card:ID> [--text-file <f>]  (text from --text-file or stdin)');
   const text = readInput(opts.textFile);
-  await request('POST', '/api/message', { target, text_md: text, author: 'agent' });
+  await request('POST', '/api/message', { target, text_md: text, author: opts.actor || 'agent' });
   console.log('said -> ' + target);
 }
 
@@ -157,7 +303,7 @@ async function cmdConfig() {
     let cfg = {};
     try { cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch (e) {}
     if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) cfg = {};
-    if (names.length) cfg.voices = names; else delete cfg.voices; // merge-preserving other keys
+    if (names.length) cfg.voices = names; else delete cfg.voices;
     fs.mkdirSync(BRIDGE_DIR, { recursive: true });
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n');
     console.log(names.length ? 'voices=' + names.join(',') : 'voices cleared');
@@ -166,17 +312,42 @@ async function cmdConfig() {
   die('usage: bridge-axi config <show | voices "<name,name,...>">');
 }
 
-const commands = { open: cmdOpen, sync: cmdSync, card: cmdCard, say: cmdSay, poll: cmdPoll, status: cmdStatus, config: cmdConfig, stop: cmdStop };
+const commands = {
+  open: cmdOpen, columns: cmdColumns, board: cmdBoard, show: cmdShow, thread: cmdThread,
+  create: cmdCreate, move: cmdMove, patch: cmdPatch, event: cmdEvent, notify: cmdNotify,
+  archive: cmdArchive, archived: cmdArchived, say: cmdSay, poll: cmdPoll,
+  status: cmdStatus, config: cmdConfig, stop: cmdStop,
+};
 if (!commands[cmd]) {
-  die('usage: bridge-axi <open|sync|card|say|poll|status|config|stop> [--port N] [--board NAME]\n' +
-    '  open [--host H]              start server if needed (binds 0.0.0.0 by default), print URL\n' +
-    '  sync <file.json|->           replace whole board doc\n' +
-    '  card <file.json|->           upsert/remove cards ({upsert,remove}, array, or one card)\n' +
-    '  say <chat|card:ID> [--text-file <f>]   post agent message (stdin default)\n' +
-    '  poll                         block until user feedback, print JSON lines, exit\n' +
-    '  status                       server/board/pending summary\n' +
-    '  config show                  print ~/.bridge/config.json (or {})\n' +
-    '  config voices "<a,b,...>"    set preferred TTS voices (substring match); "" clears\n' +
-    '  stop                         stop the server');
+  die('bridge-axi — agent CLI for the bridge board. All commands take [--port N] [--board NAME].\n' +
+    '\nserver:\n' +
+    '  open [--host H]                        start server if needed (idempotent), print URL\n' +
+    '  status                                 up/down, board, card count, pending feedback\n' +
+    '  stop                                   stop the server\n' +
+    '\nread:\n' +
+    '  board [--json]                         columns + card one-liners (or full JSON)\n' +
+    '  show <card-id> [--json]                one card: attributes, body, events, thread\n' +
+    '  thread <chat|card:ID> [--json]         print a conversation thread\n' +
+    '  archived [n] [--json]                  last n archived cards (default 20)\n' +
+    '  columns                                print the column frame (id<TAB>title)\n' +
+    '\nwrite:\n' +
+    '  create --title T [--column c] [--id id] [--body-file f|-] [--attr k=v]... [--label l]...\n' +
+    '                                         new card (default column: first)\n' +
+    '  move <card-id> <column>                move card; records an event (agent move notifies)\n' +
+    '  patch <card-id> [--title T] [--body-file f|-] [--attr k=v]...   update card (k= deletes attr)\n' +
+    '  event <card-id> [--level 1|2] [--kind K] [--text-file f|-]     append timeline event\n' +
+    '                                         kinds: alert question handoff success info\n' +
+    '                                         level 1 notifies the human; level 2 = timeline only\n' +
+    '  notify [--kind K] [--text-file f|-]    board-level notification (no card)\n' +
+    '  archive <card-id> [--reason "..."]     kill = archive (append-only file, off the board)\n' +
+    '  say <chat|card:ID> [--text-file f|-]   post a chat message (main chat says also notify)\n' +
+    '  columns <file.json|->                  replace the column frame [{id,title}] (idempotent)\n' +
+    '\nloop:\n' +
+    '  poll                                   BLOCK until user feedback, print JSON lines, exit\n' +
+    '    lines: {"seq","ts","kind":"message|card-created|card-moved","target","text",...}\n' +
+    '    run as a tracked background task; on exit handle lines, reply via say, re-run\n' +
+    '\nconfig:\n' +
+    '  config show | config voices "a,b"      TTS voice filter for the UI\n' +
+    '\nText/body always via --text-file/--body-file or stdin ("-"), never shell-interpolated.');
 }
 commands[cmd]().catch((e) => die(e.message));
