@@ -29,8 +29,21 @@ const BOARDS_DIR = path.join(BRIDGE_DIR, 'boards');
 const BOARD_FILE = path.join(BOARDS_DIR, opts.board + '.json');
 const FEEDBACK_FILE = path.join(BOARDS_DIR, opts.board + '.feedback.jsonl');
 const PID_FILE = path.join(BRIDGE_DIR, 'server-' + opts.port + '.pid');
+const CONFIG_FILE = path.join(BRIDGE_DIR, 'config.json');
 const UI_FILE = path.join(__dirname, 'ui.html');
 fs.mkdirSync(BOARDS_DIR, { recursive: true });
+
+// ---------- user config (~/.bridge/config.json, read per-request; defensive parse) ----------
+function userConfig() {
+  try {
+    const c = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    if (c && typeof c === 'object' && Array.isArray(c.voices)) {
+      const voices = c.voices.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim());
+      if (voices.length) return { voices };
+    }
+  } catch (e) {}
+  return { voices: null };
+}
 
 // ---------- pidfile: single instance per port ----------
 function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } }
@@ -132,6 +145,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(html);
     }
     if (route === 'GET /api/board') return sendJson(res, 200, board);
+    if (route === 'GET /api/config') return sendJson(res, 200, userConfig());
     if (route === 'GET /api/status') {
       return sendJson(res, 200, { board: opts.board, port: opts.port, cards: board.cards.length, feedback_seq: seq, pid: process.pid });
     }

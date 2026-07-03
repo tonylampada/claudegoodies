@@ -72,3 +72,10 @@ the server when omitted.
 
 Feedback also appears in the UI thread immediately (author `user`), so replies via `say` land in
 the same visible conversation.
+
+## Voice filter
+
+`~/.bridge/config.json` `{"voices": ["Luciana", "Google US English"]}` — case-insensitive substring
+matches trim the UI's voice dropdown; absent/empty = full list. Served at `GET /api/config`, read live.
+When the user names preferred voices in chat, run `bridge-axi config voices "Luciana,Google US English"`
+(`""` clears; `config show` prints the file) — the dropdown shrinks on next page load.

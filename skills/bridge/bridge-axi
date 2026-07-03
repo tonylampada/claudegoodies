@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // bridge-axi — CLI for the bridge agent OS board. Node built-ins only.
-// Subcommands: open | sync | card | say | poll | status | stop
+// Subcommands: open | sync | card | say | poll | status | config | stop
 'use strict';
 
 const http = require('http');
@@ -31,6 +31,7 @@ for (let i = 0; i < argv.length; i++) {
 const BASE = 'http://127.0.0.1:' + opts.port;
 const CURSOR_FILE = path.join(BOARDS_DIR, opts.board + '.cursor');
 const PID_FILE = path.join(BRIDGE_DIR, 'server-' + opts.port + '.pid');
+const CONFIG_FILE = path.join(BRIDGE_DIR, 'config.json');
 
 // ---------- http helpers ----------
 function request(method, urlPath, body, timeoutMs) {
@@ -142,15 +143,39 @@ async function cmdStop() {
   console.log('stopped pid=' + pid);
 }
 
-const commands = { open: cmdOpen, sync: cmdSync, card: cmdCard, say: cmdSay, poll: cmdPoll, status: cmdStatus, stop: cmdStop };
+async function cmdConfig() {
+  const sub = positional[0];
+  if (sub === 'show') {
+    let raw; try { raw = fs.readFileSync(CONFIG_FILE, 'utf8').trim(); } catch (e) { raw = '{}'; }
+    console.log(raw || '{}');
+    return;
+  }
+  if (sub === 'voices') {
+    if (positional.length < 2) die('usage: bridge-axi config voices "<name,name,...>"  ("" clears the filter)');
+    const names = positional.slice(1).join(' ').split(',').map((s) => s.trim()).filter(Boolean);
+    let cfg = {};
+    try { cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch (e) {}
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) cfg = {};
+    if (names.length) cfg.voices = names; else delete cfg.voices; // merge-preserving other keys
+    fs.mkdirSync(BRIDGE_DIR, { recursive: true });
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2) + '\n');
+    console.log(names.length ? 'voices=' + names.join(',') : 'voices cleared');
+    return;
+  }
+  die('usage: bridge-axi config <show | voices "<name,name,...>">');
+}
+
+const commands = { open: cmdOpen, sync: cmdSync, card: cmdCard, say: cmdSay, poll: cmdPoll, status: cmdStatus, config: cmdConfig, stop: cmdStop };
 if (!commands[cmd]) {
-  die('usage: bridge-axi <open|sync|card|say|poll|status|stop> [--port N] [--board NAME]\n' +
+  die('usage: bridge-axi <open|sync|card|say|poll|status|config|stop> [--port N] [--board NAME]\n' +
     '  open [--host H]              start server if needed (binds 0.0.0.0 by default), print URL\n' +
     '  sync <file.json|->           replace whole board doc\n' +
     '  card <file.json|->           upsert/remove cards ({upsert,remove}, array, or one card)\n' +
     '  say <chat|card:ID> [--text-file <f>]   post agent message (stdin default)\n' +
     '  poll                         block until user feedback, print JSON lines, exit\n' +
     '  status                       server/board/pending summary\n' +
+    '  config show                  print ~/.bridge/config.json (or {})\n' +
+    '  config voices "<a,b,...>"    set preferred TTS voices (substring match); "" clears\n' +
     '  stop                         stop the server');
 }
 commands[cmd]().catch((e) => die(e.message));

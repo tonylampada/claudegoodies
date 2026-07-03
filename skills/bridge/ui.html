@@ -240,6 +240,14 @@ function md(src) {
 const VOICE_KEY = 'bridge-voice';
 const voiceSelect = document.getElementById('voice-select');
 let voices = [];
+let voiceFilter = null; // lowercase substrings from /api/config, or null = no filter
+
+fetch('/api/config').then((r) => r.json()).then((cfg) => {
+  if (cfg && Array.isArray(cfg.voices) && cfg.voices.length) {
+    voiceFilter = cfg.voices.map((s) => String(s).toLowerCase());
+  }
+  if (voices.length) populateVoicePicker();
+}).catch(function () {});
 
 function savedVoice() {
   try { return JSON.parse(localStorage.getItem(VOICE_KEY)); } catch (e) { return null; }
@@ -251,8 +259,16 @@ function voiceRank(v) {
   return 3;
 }
 function populateVoicePicker() {
-  const sorted = voices.slice().sort((a, b) =>
+  let sorted = voices.slice().sort((a, b) =>
     voiceRank(a) - voiceRank(b) || a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
+  if (voiceFilter) {
+    const matches = (v) => voiceFilter.some((f) => v.name.toLowerCase().includes(f));
+    if (sorted.some(matches)) { // zero matches = fall back to full list
+      const saved = savedVoice();
+      const isSaved = (v) => saved && v.name === saved.name && v.lang === saved.lang;
+      sorted = sorted.filter((v) => matches(v) || isSaved(v));
+    }
+  }
   voiceSelect.textContent = '';
   const def = document.createElement('option');
   def.value = '';
