@@ -170,12 +170,29 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === 'POST /api/board') {
       const doc = JSON.parse(await readBody(req));
+      const prev = board;
       board = Object.assign(defaultBoard(), doc);
+      // labels are user-owned: a full sync whose cards omit the field inherits the old labels
+      for (const c of board.cards) {
+        if (c && c.id && c.labels === undefined) {
+          const old = prev.cards.find((o) => o.id === c.id);
+          if (old && old.labels) c.labels = old.labels;
+        }
+      }
       saveBoard(); broadcast(); pruneAwaiting();
       return sendJson(res, 200, { ok: true, updated: board.updated });
     }
     if (route === 'PATCH /api/cards') {
       const body = JSON.parse(await readBody(req));
+      // update: merge onto EXISTING cards only (never creates). Used by the UI for
+      // user-owned fields like labels, so a typo'd id can't create a phantom card.
+      for (const card of body.update || []) {
+        if (!card.id) return sendJson(res, 400, { error: 'card without id' });
+        const i = board.cards.findIndex((c) => c.id === card.id);
+        if (i < 0) return sendJson(res, 404, { error: 'unknown card: ' + card.id });
+        if (!card.thread) card.thread = board.cards[i].thread || [];
+        board.cards[i] = Object.assign({}, board.cards[i], card, { updated: card.updated || now() });
+      }
       for (const card of body.upsert || []) {
         if (!card.id) return sendJson(res, 400, { error: 'card without id' });
         const i = board.cards.findIndex((c) => c.id === card.id);

@@ -56,6 +56,7 @@ Rules:
   "cards": [{
     "id": "…", "column": "inflight", "title": "…", "summary": "…", "owner": "agent-a (optional; groups/colors cards per owning agent)",
     "badges": [{"text": "CI green", "tone": "success|warn|danger|info|neutral"}],
+    "labels": ["user-owned", "…"],
     "links": [{"text": "PR #123", "url": "https://…"}],
     "detail_md": "…", "thread": [{"author": "agent|user", "text": "…", "ts": "…"}]
   }],
@@ -66,6 +67,14 @@ Rules:
 Columns render in doc order; cards render under their `column` id. `card` upserts merge onto the
 existing card and preserve its thread unless you send a new one. `updated` timestamps are set by
 the server when omitted.
+
+`badges` vs `labels`: badges are agent-owned — replace them freely on sync/upsert. `labels` is
+USER-owned (edited in the card drawer, persisted in board state): never set or rewrite it. Upserts
+and full `sync` docs that omit the field leave existing labels intact (the server carries them
+forward by card id); only sending an explicit `labels` value overwrites. PATCH also accepts
+`update: [...]` which merges onto existing cards only (404s on unknown id, never creates) — the
+UI uses it for label edits.
+Badges, labels, and owner names in the UI are click-to-filter (AND-composed with the text filter).
 
 ## Agent loop
 

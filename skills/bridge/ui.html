@@ -39,6 +39,13 @@
   }
   #filter:focus { border-color: var(--accent2); }
   #filter-n { color: var(--dim); font-size: 11px; white-space: nowrap; }
+  #filter-chips { display: flex; gap: 5px; align-items: center; flex: none; max-width: 40%; overflow: hidden; }
+  .fchip {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 9px;
+    border-radius: 10px; background: var(--accent2); color: #eaf6ff; cursor: pointer; white-space: nowrap;
+  }
+  .fchip:hover { background: var(--accent); color: #06222f; }
+  .fchip .x { font-size: 10px; opacity: .8; }
   #filter-clear { display: none; background: none; border: none; color: var(--dim); cursor: pointer; font: inherit; font-size: 12px; padding: 0 2px; }
   #filter-clear:hover { color: var(--text); }
   #voice-btn {
@@ -88,13 +95,18 @@
   .badge.danger { color: var(--danger); border-color: var(--danger); }
   .badge.info { color: var(--info); border-color: var(--info); }
   .badge.neutral { color: var(--neutral); border-color: var(--neutral); }
+  .label { font-size: 10.5px; padding: 1px 7px; border-radius: 4px; background: var(--panel2); border: 1px dashed var(--faint); color: var(--dim); }
+  .badge, .label { cursor: pointer; }
+  .badge.active, .label.active { background: var(--accent2); color: #eaf6ff; border-color: var(--accent2); border-style: solid; }
   .links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px; font-size: 12px; }
   .owner-head {
     display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 1px; color: var(--faint); margin: 6px 2px 2px;
   }
   .owner-head .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-  #d-owner { font-size: 10.5px; padding: 1px 8px; border-radius: 10px; border: 1px solid; align-self: center; white-space: nowrap; }
+  .owner-head[data-owner]:not([data-owner=""]) { cursor: pointer; }
+  .owner-head:not([data-owner=""]):hover, .owner-head.active { color: var(--text); }
+  #d-owner { font-size: 10.5px; padding: 1px 8px; border-radius: 10px; border: 1px solid; align-self: center; white-space: nowrap; cursor: pointer; }
   .empty { color: var(--faint); padding: 40px; text-align: center; width: 100%; }
 
   /* drawer */
@@ -111,6 +123,18 @@
   #drawer .d-detail { border-bottom: 1px dashed var(--line); padding-bottom: 12px; margin-bottom: 12px; }
   #drawer .d-detail .badges { margin: 8px 0 4px; }
   #drawer .d-detail .d-none { color: var(--faint); }
+  #d-labels { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; border-bottom: 1px dashed var(--line); padding-bottom: 12px; margin-bottom: 12px; }
+  .dlabel {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 8px;
+    border-radius: 4px; background: var(--panel2); border: 1px dashed var(--faint); color: var(--dim);
+  }
+  .dlabel button { background: none; border: none; color: var(--faint); cursor: pointer; font: inherit; font-size: 10px; padding: 0; }
+  .dlabel button:hover { color: var(--danger); }
+  #d-label-add {
+    background: var(--panel); border: 1px dashed var(--line); border-radius: 4px; color: var(--text);
+    font: inherit; font-size: 11px; padding: 2px 8px; width: 90px; outline: none;
+  }
+  #d-label-add:focus { border-color: var(--accent2); }
 
   /* markdown */
   .md h1, .md h2, .md h3 { margin: 10px 0 5px; line-height: 1.25; }
@@ -164,6 +188,7 @@
   <h1 id="b-title">bridge</h1>
   <div class="subtitle" id="b-subtitle"></div>
   <span id="filter-wrap">
+    <span id="filter-chips"></span>
     <input id="filter" placeholder="type to filter ( / )" autocomplete="off">
     <span id="filter-n"></span>
     <button id="filter-clear" title="clear filter">✕</button>
@@ -186,6 +211,7 @@
   </div>
   <div class="d-body" id="d-body">
     <div class="d-detail md" id="d-detail"></div>
+    <div id="d-labels"></div>
     <div class="thread" id="d-thread"></div>
   </div>
   <form class="composer" id="d-form">
@@ -434,20 +460,27 @@ function boardMultiOwner() {
 }
 function ownerHeadHtml(owner) {
   const color = owner ? ownerColor(owner) : 'var(--neutral)';
-  return '<div class="owner-head"><span class="dot" style="background:' + color + '"></span>' +
+  return '<div class="owner-head' + (owner && filterSelected('owner', owner) ? ' active' : '') +
+    '" data-owner="' + esc(owner) + '" title="' + (owner ? 'filter by this owner' : '') + '">' +
+    '<span class="dot" style="background:' + color + '"></span>' +
     (owner ? esc(owner) : 'unassigned') + '</div>';
 }
 
 function badgesHtml(c) {
   return (c.badges || []).map((b) =>
-    '<span class="badge ' + (['success','warn','danger','info','neutral'].includes(b.tone) ? b.tone : 'neutral') + '">' + esc(b.text) + '</span>').join('');
+    '<span class="badge ' + (['success','warn','danger','info','neutral'].includes(b.tone) ? b.tone : 'neutral') +
+    (filterSelected('tag', b.text) ? ' active' : '') + '" title="filter by this badge">' + esc(b.text) + '</span>').join('');
+}
+function labelsHtml(c) {
+  return (c.labels || []).map((t) =>
+    '<span class="label' + (filterSelected('tag', t) ? ' active' : '') + '" title="filter by this label">' + esc(t) + '</span>').join('');
 }
 function linksHtml(c) {
   return (c.links || []).map((l) =>
     '<a href="' + esc(l.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">' + esc(l.text) + '</a>').join('');
 }
 function cardHtml(c, ownerAccent) {
-  const badges = badgesHtml(c);
+  const badges = badgesHtml(c) + labelsHtml(c);
   const links = linksHtml(c);
   const tn = (c.thread || []).length;
   const accent = ownerAccent && c.owner ? ' style="border-left:3px solid ' + ownerColor(c.owner) + '"' : '';
@@ -503,7 +536,16 @@ function render() {
   boardEl.querySelectorAll('.column').forEach((col) => {
     if (colScroll[col.dataset.id] != null) col.querySelector('.cards').scrollTop = colScroll[col.dataset.id];
   });
-  boardEl.querySelectorAll('.card').forEach((el) => { el.onclick = () => openDrawer(el.dataset.id); });
+  boardEl.querySelectorAll('.card').forEach((el) => {
+    el.onclick = (e) => {
+      const t = e.target;
+      if (t.classList.contains('badge') || t.classList.contains('label')) { toggleFilter('tag', t.textContent); return; }
+      openDrawer(el.dataset.id);
+    };
+  });
+  boardEl.querySelectorAll('.owner-head').forEach((el) => {
+    el.onclick = () => { if (el.dataset.owner) toggleFilter('owner', el.dataset.owner); };
+  });
 
   // drawer (keep open if its card still exists)
   if (openCardId) {
@@ -530,8 +572,11 @@ function renderDrawer(card) {
     ownerEl.style.color = color;
     ownerEl.style.borderColor = color;
     ownerEl.style.display = 'inline-block';
+    ownerEl.title = 'filter by this owner';
+    ownerEl.onclick = () => toggleFilter('owner', card.owner);
   } else {
     ownerEl.style.display = 'none';
+    ownerEl.onclick = null;
   }
   const detailEl = document.getElementById('d-detail');
   if (card.detail_md) {
@@ -545,7 +590,57 @@ function renderDrawer(card) {
       (links ? '<div class="links">' + links + '</div>' : '') ||
       '<p class="d-none">no detail for this card</p>';
   }
+  renderDrawerLabels(card);
   renderThread(document.getElementById('d-thread'), card.thread || [], 'card:' + card.id);
+}
+// clicking a badge/label inside the drawer detail toggles that filter too
+document.getElementById('d-detail').onclick = (e) => {
+  const t = e.target;
+  if (t.classList.contains('badge') || t.classList.contains('label')) toggleFilter('tag', t.textContent);
+};
+
+// ---------- user-owned labels (persisted per card; agents never touch them) ----------
+function renderDrawerLabels(card) {
+  const wrap = document.getElementById('d-labels');
+  const prev = document.getElementById('d-label-add');
+  const keep = prev ? { value: prev.value, focused: document.activeElement === prev } : null;
+  wrap.textContent = '';
+  for (const t of card.labels || []) {
+    const chip = document.createElement('span');
+    chip.className = 'dlabel';
+    const txt = document.createElement('span');
+    txt.textContent = t;
+    txt.title = 'filter by this label';
+    txt.style.cursor = 'pointer';
+    txt.onclick = () => toggleFilter('tag', t);
+    const x = document.createElement('button');
+    x.type = 'button'; x.textContent = '✕'; x.title = 'remove label';
+    x.onclick = () => saveLabels(card.id, (card.labels || []).filter((v) => v !== t));
+    chip.append(txt, x);
+    wrap.appendChild(chip);
+  }
+  const inp = document.createElement('input');
+  inp.id = 'd-label-add';
+  inp.placeholder = '+ label';
+  inp.autocomplete = 'off';
+  inp.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = inp.value.trim();
+      if (v && !(card.labels || []).includes(v)) saveLabels(card.id, (card.labels || []).concat(v));
+      inp.value = '';
+    } else if (e.key === 'Escape') {
+      inp.value = ''; inp.blur(); e.stopPropagation();
+    }
+  };
+  wrap.appendChild(inp);
+  if (keep) { inp.value = keep.value; if (keep.focused) inp.focus(); }
+}
+async function saveLabels(id, labels) {
+  await fetch('/api/cards', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ update: [{ id, labels }] }), // update = merge onto existing card only
+  });
 }
 function openDrawer(id) { openCardId = id; render(); }
 function closeDrawer() { openCardId = null; document.getElementById('drawer').classList.remove('open'); render(); }
@@ -553,22 +648,55 @@ document.getElementById('d-close').onclick = closeDrawer;
 
 // ---------- filter (pure client-side; re-applied after every render) ----------
 const filterInput = document.getElementById('filter');
+let selFilters = []; // [{kind:'tag'|'owner', value}] — badge/label text and owner filters (AND)
+function filterSelected(kind, value) { return selFilters.some((f) => f.kind === kind && f.value === value); }
+function toggleFilter(kind, value) {
+  if (!value) return;
+  const i = selFilters.findIndex((f) => f.kind === kind && f.value === value);
+  if (i >= 0) selFilters.splice(i, 1); else selFilters.push({ kind, value });
+  renderChips();
+  render(); // re-render so active highlights update; render() ends in applyFilter()
+}
+function matchesSel(c) {
+  return selFilters.every((f) =>
+    f.kind === 'owner' ? (c.owner || '') === f.value :
+    ((c.badges || []).some((b) => b.text === f.value) || (c.labels || []).includes(f.value)));
+}
+function renderChips() {
+  const wrap = document.getElementById('filter-chips');
+  wrap.textContent = '';
+  for (const f of selFilters) {
+    const chip = document.createElement('span');
+    chip.className = 'fchip';
+    chip.title = 'remove this filter';
+    const t = document.createElement('span');
+    t.textContent = (f.kind === 'owner' ? '@' : '') + f.value;
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = '✕';
+    chip.append(t, x);
+    chip.onclick = () => toggleFilter(f.kind, f.value);
+    wrap.appendChild(chip);
+  }
+}
 function cardHaystack(c) {
   const col = ((doc && doc.columns) || []).find((k) => k.id === c.column);
   return [c.title, c.id, c.summary, c.owner,
     (c.badges || []).map((b) => b.text).join(' '),
+    (c.labels || []).join(' '),
     (c.links || []).map((l) => l.text + ' ' + l.url).join(' '),
     col ? (col.title || col.id) : (c.column || '')
   ].filter(Boolean).join(' ').toLowerCase();
 }
 function applyFilter() {
   const q = filterInput.value.trim().toLowerCase();
+  const active = q || selFilters.length;
   const boardEl = document.getElementById('board');
   let shown = 0, total = 0;
   boardEl.querySelectorAll('.card').forEach((el) => {
     total++;
     const c = ((doc && doc.cards) || []).find((x) => x.id === el.dataset.id);
-    const ok = !q || (c && cardHaystack(c).includes(q));
+    const ok = !active || (c && (!q || cardHaystack(c).includes(q)) && matchesSel(c));
     el.style.display = ok ? '' : 'none';
     if (ok) shown++;
   });
@@ -583,10 +711,14 @@ function applyFilter() {
     }
     if (head) head.style.display = any ? '' : 'none';
   });
-  document.getElementById('filter-n').textContent = q ? shown + '/' + total : '';
-  document.getElementById('filter-clear').style.display = q ? 'inline' : 'none';
+  document.getElementById('filter-n').textContent = active ? shown + '/' + total : '';
+  document.getElementById('filter-clear').style.display = active ? 'inline' : 'none';
 }
-function clearFilter() { filterInput.value = ''; applyFilter(); }
+function clearFilter() {
+  filterInput.value = '';
+  if (selFilters.length) { selFilters = []; renderChips(); render(); } // render() ends in applyFilter()
+  else applyFilter();
+}
 filterInput.oninput = applyFilter;
 filterInput.onkeydown = function (e) {
   if (e.key === 'Escape') { clearFilter(); filterInput.blur(); e.stopPropagation(); }
@@ -600,7 +732,7 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.key === 'Escape') {
     if (openCardId) closeDrawer();
-    else if (filterInput.value) clearFilter();
+    else if (filterInput.value || selFilters.length) clearFilter();
   }
 });
 

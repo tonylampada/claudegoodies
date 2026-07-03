@@ -99,7 +99,7 @@ async function cmdSync() {
 async function cmdCard() {
   let body = JSON.parse(readInput(positional[0]));
   if (Array.isArray(body)) body = { upsert: body };
-  else if (!body.upsert && !body.remove) body = { upsert: [body] };
+  else if (!body.upsert && !body.remove && !body.update) body = { upsert: [body] };
   const r = await request('PATCH', '/api/cards', body);
   console.log('cards=' + r.cards);
 }
