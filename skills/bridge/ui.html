@@ -486,12 +486,17 @@ function speak(text) {
   const plain = stripEmoji(text.replace(/```[\s\S]*?```/g, ' code ').replace(/[`*#\[\]()]/g, ' ').replace(/https?:\S+/g, ' link '));
   speechSynthesis.speak(utter(plain.slice(0, 600)));
 }
-document.getElementById('voice-btn').onclick = function () {
-  voiceOn = !voiceOn;
-  this.classList.toggle('on', voiceOn);
-  this.textContent = voiceOn ? '🔊 on' : '🔊 off';
-  document.getElementById('voice-tools').classList.toggle('dim', !voiceOn);
-};
+const VOICE_ON_KEY = 'bridge-voice-on';
+function setVoiceOn(on) {
+  voiceOn = on;
+  const btn = document.getElementById('voice-btn');
+  btn.classList.toggle('on', on);
+  btn.textContent = on ? '🔊 on' : '🔊 off';
+  document.getElementById('voice-tools').classList.toggle('dim', !on);
+  try { if (on) localStorage.setItem(VOICE_ON_KEY, '1'); else localStorage.removeItem(VOICE_ON_KEY); } catch (e) {}
+}
+document.getElementById('voice-btn').onclick = function () { setVoiceOn(!voiceOn); };
+try { if (localStorage.getItem(VOICE_ON_KEY) === '1') setVoiceOn(true); } catch (e) {} // restore; default off
 document.getElementById('voice-test').onclick = function () {
   if (!window.speechSynthesis) return;
   speechSynthesis.cancel();
