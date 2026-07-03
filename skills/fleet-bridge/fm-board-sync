@@ -49,6 +49,16 @@ for (let i = 0; i < argv.length; i++) {
   else { warn('unknown option: ' + a); process.exit(2); }
 }
 
+// ---------- canonical column frame (skill-owned; reproduced on every --apply) ----------
+// ids match the column placement this generator assigns (inflight/waiting/done); ideas is
+// part of the declared frame but has no generator card mapping (hand-curated cards only).
+const COLUMNS = [
+  { id: 'inflight', title: '🔨 In flight' },
+  { id: 'waiting', title: '⏳ Awaiting merge (captain)' },
+  { id: 'done', title: '✅ Delivered (recent)' },
+  { id: 'ideas', title: '💡 Ideas / Discussion' },
+];
+
 // ---------- helpers ----------
 function readFileSafe(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch (e) { return null; }
@@ -339,7 +349,9 @@ function main() {
   }
   for (const c of upsert) delete c._doneVerb; // internal annotation, never emitted
 
-  const doc = { upsert, remove: [] };
+  // The column frame is skill-owned: emitted for inspection in stdout mode and pushed on
+  // --apply via the server's idempotent columns field (identical columns = server no-op).
+  const doc = { upsert, remove: [], columns: COLUMNS };
 
   if (!opts.apply) {
     for (const p of pendingPromos) {

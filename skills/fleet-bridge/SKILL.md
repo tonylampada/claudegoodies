@@ -42,6 +42,13 @@ and emits `{upsert,remove}` card upserts — the board's mechanical skeleton, no
   `merged` (fully finished, nothing actionable left) never emit, in every home; `shipped`,
   `reported`, `fixed`, etc still do. The generator never emits removes, so a merged card already
   on the board is removed manually once: `bridge-axi card - <<< '{"remove":["<id>"]}'`.
+- **Columns are skill-owned** (ids + titles), not hand-seeded: the canonical frame lives in the
+  `COLUMNS` constant in `fm-board-sync` — `inflight` "🔨 In flight", `waiting`
+  "⏳ Awaiting merge (captain)", `done` "✅ Delivered (recent)", `ideas` "💡 Ideas / Discussion".
+  On `--apply` the generator pushes it via `PATCH /api/cards`'s `columns` field (idempotent —
+  identical columns are a server-side no-op, no `updated` churn), so a board reset reproduces the
+  frame from the skill instead of memory. Stdout mode includes a `columns` field for inspection.
+  `ideas` has no generator card mapping (hand-curated cards only) but is part of the declared frame.
 - Hand-enrichment survives: the generator never emits `detail_md` and never computes `remove`,
   so hand-written detail, threads, extra cards, and standing cards are preserved by the server's
   per-card merge. It only prints an advisory stderr line for task-shaped cards it didn't regenerate.
