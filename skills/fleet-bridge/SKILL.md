@@ -49,7 +49,15 @@ and emits `{upsert,remove}` card upserts — the board's mechanical skeleton, no
 
 ## Cadence
 
-- **Sync on every wake** that changes fleet state (spawn, done, PR opened/green, teardown, failure): `bridge-axi card -` with an `{upsert:[...]}` — NEVER full `sync` unless you round-trip the current doc (GET `/api/board` → modify → POST), because full sync replaces threads/chat.
+- **Zero-token auto-refresh**: drop a silent shim in the firstmate home so the existing watcher's
+  per-task check mechanism keeps the board fresh between agent wakes — no new daemon, no LLM cost:
+
+  ```sh
+  # <fm-home>/state/board-sync.check.sh  — prints nothing, so it never wakes the agent
+  <this-skill-dir>/fm-board-sync --home <fm-home> --apply --board fleet >/dev/null 2>&1 || true
+  ```
+
+- **Sync on every wake** that changes fleet state (spawn, done, PR opened/green, teardown, failure): run `fm-board-sync --apply`, then curate with `bridge-axi card -` `{upsert:[...]}` where prose matters (once per card — it sticks). NEVER full `sync` unless you round-trip the current doc (GET `/api/board` → modify → POST), because full sync replaces threads/chat.
 - **Keep exactly one `bridge-axi poll --board fleet` running** as a harness-tracked background task, exactly like the watcher arm chain. It exits when captain feedback arrives → handle → reply → re-run the poll. Restart it after any server restart (poll dies with the connection).
 - Reply targets: `say chat` for global, `say card:<id>` for card threads. Text via stdin or `--text-file`, never shell-interpolated.
 - Feedback arriving on a card = captain instruction in that task's context: act through the NORMAL firstmate lifecycle (steer/dispatch/merge on word), then reflect the outcome on the card.
