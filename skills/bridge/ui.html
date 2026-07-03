@@ -346,9 +346,17 @@ function utter(text) {
   if (v) { u.voice = v; u.lang = v.lang; }
   return u;
 }
+function stripEmoji(s) { // spoken text only; rendered text is untouched
+  return s
+    .replace(/[\u{1F1E6}-\u{1F1FF}]/gu, ' ')                              // regional indicators (flags)
+    .replace(/\p{Extended_Pictographic}/gu, ' ')                          // emoji & pictographs
+    .replace(/[\u{FE00}-\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}\u{20E3}]/gu, '') // variation selectors, ZWJ, skin tones, keycap
+    .replace(/[←-⇿⌀-⏿■-◿☀-➿⬀-⯿]/g, ' ') // arrows/technical/geometric/misc symbols
+    .replace(/\s{2,}/g, ' ').trim();
+}
 function speak(text) {
   if (!voiceOn || !window.speechSynthesis) return;
-  const plain = text.replace(/```[\s\S]*?```/g, ' code ').replace(/[`*#\[\]()]/g, ' ').replace(/https?:\S+/g, ' link ');
+  const plain = stripEmoji(text.replace(/```[\s\S]*?```/g, ' code ').replace(/[`*#\[\]()]/g, ' ').replace(/https?:\S+/g, ' link '));
   speechSynthesis.speak(utter(plain.slice(0, 600)));
 }
 document.getElementById('voice-btn').onclick = function () {
