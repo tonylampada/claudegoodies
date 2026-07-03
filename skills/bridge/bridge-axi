@@ -1,0 +1,155 @@
+#!/usr/bin/env node
+// bridge-axi — CLI for the bridge agent OS board. Node built-ins only.
+// Subcommands: open | sync | card | say | poll | status | stop
+'use strict';
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
+
+const SELF_DIR = path.dirname(fs.realpathSync(process.argv[1]));
+const SERVER_JS = path.join(SELF_DIR, 'server.js');
+const BRIDGE_DIR = path.join(os.homedir(), '.bridge');
+const BOARDS_DIR = path.join(BRIDGE_DIR, 'boards');
+
+function die(msg) { console.error(msg); process.exit(1); }
+
+// ---------- args ----------
+const argv = process.argv.slice(2);
+const cmd = argv.shift();
+const opts = { port: 4777, board: 'default', textFile: null };
+const positional = [];
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--port') opts.port = parseInt(argv[++i], 10);
+  else if (argv[i] === '--board') opts.board = argv[++i];
+  else if (argv[i] === '--text-file') opts.textFile = argv[++i];
+  else positional.push(argv[i]);
+}
+const BASE = 'http://127.0.0.1:' + opts.port;
+const CURSOR_FILE = path.join(BOARDS_DIR, opts.board + '.cursor');
+const PID_FILE = path.join(BRIDGE_DIR, 'server-' + opts.port + '.pid');
+
+// ---------- http helpers ----------
+function request(method, urlPath, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const data = body == null ? null : (typeof body === 'string' ? body : JSON.stringify(body));
+    const req = http.request(BASE + urlPath, {
+      method,
+      headers: data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {},
+      timeout: timeoutMs || 10000,
+    }, (res) => {
+      let out = '';
+      res.on('data', (c) => (out += c));
+      res.on('end', () => {
+        let parsed; try { parsed = JSON.parse(out); } catch (e) { parsed = out; }
+        if (res.statusCode >= 400) reject(new Error('HTTP ' + res.statusCode + ': ' + out));
+        else resolve(parsed);
+      });
+    });
+    req.on('timeout', () => { req.destroy(new Error('timeout')); });
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+async function serverUp() {
+  try { return await request('GET', '/api/status', null, 1500); } catch (e) { return null; }
+}
+function readInput(fileArg) {
+  const src = fileArg && fileArg !== '-' ? fileArg : 0; // fd 0 = stdin
+  return fs.readFileSync(src, 'utf8');
+}
+function readCursor() {
+  try { return parseInt(fs.readFileSync(CURSOR_FILE, 'utf8'), 10) || 0; } catch (e) { return 0; }
+}
+function writeCursor(n) {
+  fs.mkdirSync(BOARDS_DIR, { recursive: true });
+  fs.writeFileSync(CURSOR_FILE, String(n));
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------- subcommands ----------
+async function cmdOpen() {
+  let st = await serverUp();
+  if (!st) {
+    const child = spawn(process.execPath, [SERVER_JS, '--port', String(opts.port), '--board', opts.board], {
+      detached: true, stdio: 'ignore',
+    });
+    child.unref();
+    for (let i = 0; i < 20 && !st; i++) { await sleep(150); st = await serverUp(); }
+    if (!st) die('failed to start server on port ' + opts.port);
+    console.log('http://localhost:' + opts.port + '/');
+    console.log('started board=' + opts.board + ' cards=' + st.cards);
+  } else {
+    console.log('http://localhost:' + opts.port + '/');
+    console.log('already running board=' + st.board + ' cards=' + st.cards);
+  }
+}
+
+async function cmdSync() {
+  const doc = JSON.parse(readInput(positional[0]));
+  const r = await request('POST', '/api/board', doc);
+  console.log('synced updated=' + r.updated);
+}
+
+async function cmdCard() {
+  let body = JSON.parse(readInput(positional[0]));
+  if (Array.isArray(body)) body = { upsert: body };
+  else if (!body.upsert && !body.remove) body = { upsert: [body] };
+  const r = await request('PATCH', '/api/cards', body);
+  console.log('cards=' + r.cards);
+}
+
+async function cmdSay() {
+  const target = positional[0];
+  if (!target || !/^(chat|card:.+)$/.test(target)) die('usage: bridge-axi say <chat|card:ID> [--text-file <f>]  (text from --text-file or stdin)');
+  const text = readInput(opts.textFile);
+  await request('POST', '/api/message', { target, text_md: text, author: 'agent' });
+  console.log('said -> ' + target);
+}
+
+async function cmdPoll() {
+  let cursor = readCursor();
+  for (;;) {
+    let r;
+    try { r = await request('GET', '/api/poll?since=' + cursor, null, 70000); }
+    catch (e) { die('poll failed: ' + e.message); }
+    if (r.events && r.events.length) {
+      for (const ev of r.events) console.log(JSON.stringify(ev));
+      writeCursor(r.cursor);
+      return; // exit after first batch so a harness gets notified
+    }
+    cursor = r.cursor; // empty long-poll timed out; loop again
+  }
+}
+
+async function cmdStatus() {
+  const st = await serverUp();
+  if (!st) { console.log('server: down (port ' + opts.port + ')'); process.exit(1); }
+  const pending = Math.max(0, st.feedback_seq - readCursor());
+  console.log('server: up  board=' + st.board + '  cards=' + st.cards + '  pending-feedback=' + pending + '  url=http://localhost:' + opts.port + '/');
+}
+
+async function cmdStop() {
+  let pid = null;
+  try { pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'), 10); } catch (e) {}
+  if (!pid) { const st = await serverUp(); pid = st && st.pid; }
+  if (!pid) die('no server found on port ' + opts.port);
+  try { process.kill(pid, 'SIGTERM'); } catch (e) { die('failed to stop pid ' + pid + ': ' + e.message); }
+  console.log('stopped pid=' + pid);
+}
+
+const commands = { open: cmdOpen, sync: cmdSync, card: cmdCard, say: cmdSay, poll: cmdPoll, status: cmdStatus, stop: cmdStop };
+if (!commands[cmd]) {
+  die('usage: bridge-axi <open|sync|card|say|poll|status|stop> [--port N] [--board NAME]\n' +
+    '  open                         start server if needed, print URL\n' +
+    '  sync <file.json|->           replace whole board doc\n' +
+    '  card <file.json|->           upsert/remove cards ({upsert,remove}, array, or one card)\n' +
+    '  say <chat|card:ID> [--text-file <f>]   post agent message (stdin default)\n' +
+    '  poll                         block until user feedback, print JSON lines, exit\n' +
+    '  status                       server/board/pending summary\n' +
+    '  stop                         stop the server');
+}
+commands[cmd]().catch((e) => die(e.message));

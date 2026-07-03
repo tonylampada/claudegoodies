@@ -1,0 +1,208 @@
+#!/usr/bin/env node
+// bridge server — agent OS board. Node built-ins only, no deps.
+// Usage: node server.js --port 4777 --board default
+'use strict';
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// ---------- args ----------
+function parseArgs(argv) {
+  const opts = { port: 4777, board: 'default' };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--port') opts.port = parseInt(argv[++i], 10);
+    else if (argv[i] === '--board') opts.board = argv[++i];
+  }
+  if (!Number.isInteger(opts.port) || opts.port <= 0) { console.error('bad --port'); process.exit(1); }
+  if (!/^[\w.-]+$/.test(opts.board)) { console.error('bad --board (use [A-Za-z0-9_.-])'); process.exit(1); }
+  return opts;
+}
+const opts = parseArgs(process.argv.slice(2));
+
+// ---------- paths ----------
+const BRIDGE_DIR = path.join(os.homedir(), '.bridge');
+const BOARDS_DIR = path.join(BRIDGE_DIR, 'boards');
+const BOARD_FILE = path.join(BOARDS_DIR, opts.board + '.json');
+const FEEDBACK_FILE = path.join(BOARDS_DIR, opts.board + '.feedback.jsonl');
+const PID_FILE = path.join(BRIDGE_DIR, 'server-' + opts.port + '.pid');
+const UI_FILE = path.join(__dirname, 'ui.html');
+fs.mkdirSync(BOARDS_DIR, { recursive: true });
+
+// ---------- pidfile: single instance per port ----------
+function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } }
+if (fs.existsSync(PID_FILE)) {
+  const old = parseInt(fs.readFileSync(PID_FILE, 'utf8'), 10);
+  if (old && pidAlive(old)) process.exit(0); // live server already on this port
+}
+fs.writeFileSync(PID_FILE, String(process.pid));
+function cleanup() {
+  try { if (parseInt(fs.readFileSync(PID_FILE, 'utf8'), 10) === process.pid) fs.unlinkSync(PID_FILE); } catch (e) {}
+}
+process.on('exit', cleanup);
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { cleanup(); process.exit(0); });
+
+// ---------- board state ----------
+function now() { return new Date().toISOString(); }
+function defaultBoard() {
+  return { title: opts.board, subtitle: '', updated: now(), columns: [], cards: [], chat: [] };
+}
+function loadBoard() {
+  try { return Object.assign(defaultBoard(), JSON.parse(fs.readFileSync(BOARD_FILE, 'utf8'))); }
+  catch (e) { return defaultBoard(); }
+}
+let board = loadBoard();
+function saveBoard() {
+  board.updated = now();
+  const tmp = BOARD_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(board, null, 2));
+  fs.renameSync(tmp, BOARD_FILE);
+}
+
+// ---------- feedback queue (durable jsonl, monotonic seq) ----------
+let feedback = [];
+try {
+  feedback = fs.readFileSync(FEEDBACK_FILE, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+} catch (e) {}
+let seq = feedback.length ? feedback[feedback.length - 1].seq : 0;
+function pushFeedback(target, text) {
+  const ev = { seq: ++seq, target, text, ts: now() };
+  feedback.push(ev);
+  fs.appendFileSync(FEEDBACK_FILE, JSON.stringify(ev) + '\n');
+  flushPollers();
+  return ev;
+}
+
+// ---------- long-poll waiters ----------
+let pollers = []; // {since, res, timer}
+function feedbackSince(since) { return feedback.filter((e) => e.seq > since); }
+function flushPollers() {
+  pollers = pollers.filter((p) => {
+    const evs = feedbackSince(p.since);
+    if (!evs.length) return true;
+    clearTimeout(p.timer);
+    sendJson(p.res, 200, { events: evs, cursor: seq });
+    return false;
+  });
+}
+
+// ---------- SSE clients ----------
+const sseClients = new Set();
+function broadcast() {
+  const payload = 'event: board\ndata: ' + JSON.stringify(board) + '\n\n';
+  for (const res of sseClients) res.write(payload);
+}
+setInterval(() => { for (const res of sseClients) res.write(': ping\n\n'); }, 25000).unref();
+
+// ---------- helpers ----------
+function sendJson(res, code, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
+  res.end(body);
+}
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c) => { data += c; if (data.length > 8e6) { reject(new Error('body too large')); req.destroy(); } });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
+}
+function threadFor(target) {
+  if (target === 'chat') return board.chat;
+  const m = /^card:(.+)$/.exec(target || '');
+  if (m) {
+    const card = board.cards.find((c) => c.id === m[1]);
+    if (card) return (card.thread = card.thread || []);
+  }
+  return null;
+}
+
+// ---------- server ----------
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const route = req.method + ' ' + url.pathname;
+  try {
+    if (route === 'GET /') {
+      const html = fs.readFileSync(UI_FILE);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(html);
+    }
+    if (route === 'GET /api/board') return sendJson(res, 200, board);
+    if (route === 'GET /api/status') {
+      return sendJson(res, 200, { board: opts.board, port: opts.port, cards: board.cards.length, feedback_seq: seq, pid: process.pid });
+    }
+    if (route === 'POST /api/board') {
+      const doc = JSON.parse(await readBody(req));
+      board = Object.assign(defaultBoard(), doc);
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true, updated: board.updated });
+    }
+    if (route === 'PATCH /api/cards') {
+      const body = JSON.parse(await readBody(req));
+      for (const card of body.upsert || []) {
+        if (!card.id) return sendJson(res, 400, { error: 'card without id' });
+        const i = board.cards.findIndex((c) => c.id === card.id);
+        if (i >= 0) {
+          // merge: keep existing thread unless the upsert brings one
+          if (!card.thread) card.thread = board.cards[i].thread || [];
+          board.cards[i] = Object.assign({}, board.cards[i], card, { updated: card.updated || now() });
+        } else {
+          card.thread = card.thread || [];
+          card.updated = card.updated || now();
+          board.cards.push(card);
+        }
+      }
+      for (const id of body.remove || []) board.cards = board.cards.filter((c) => c.id !== id);
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true, cards: board.cards.length });
+    }
+    if (route === 'POST /api/message') {
+      const body = JSON.parse(await readBody(req));
+      const thread = threadFor(body.target);
+      if (!thread) return sendJson(res, 404, { error: 'unknown target: ' + body.target });
+      thread.push({ author: body.author || 'agent', text: String(body.text_md || body.text || ''), ts: now() });
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true });
+    }
+    if (route === 'POST /api/feedback') {
+      const body = JSON.parse(await readBody(req));
+      const thread = threadFor(body.target);
+      if (!thread) return sendJson(res, 404, { error: 'unknown target: ' + body.target });
+      thread.push({ author: 'user', text: String(body.text || ''), ts: now() });
+      const ev = pushFeedback(body.target, String(body.text || ''));
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true, seq: ev.seq });
+    }
+    if (route === 'GET /api/poll') {
+      const since = parseInt(url.searchParams.get('since') || '0', 10) || 0;
+      const evs = feedbackSince(since);
+      if (evs.length) return sendJson(res, 200, { events: evs, cursor: seq });
+      if (url.searchParams.get('nowait')) return sendJson(res, 200, { events: [], cursor: seq });
+      const p = { since, res, timer: null };
+      p.timer = setTimeout(() => {
+        pollers = pollers.filter((x) => x !== p);
+        sendJson(res, 200, { events: [], cursor: seq });
+      }, 60000);
+      req.on('close', () => { clearTimeout(p.timer); pollers = pollers.filter((x) => x !== p); });
+      pollers.push(p);
+      return;
+    }
+    if (route === 'GET /api/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      res.write('event: board\ndata: ' + JSON.stringify(board) + '\n\n');
+      sseClients.add(res);
+      req.on('close', () => sseClients.delete(res));
+      return;
+    }
+    sendJson(res, 404, { error: 'not found' });
+  } catch (e) {
+    sendJson(res, 400, { error: String(e.message || e) });
+  }
+});
+
+server.on('error', (e) => { console.error('server error: ' + e.message); cleanup(); process.exit(1); });
+server.listen(opts.port, '127.0.0.1', () => {
+  console.log('bridge server up: http://localhost:' + opts.port + '/ board=' + opts.board + ' pid=' + process.pid);
+});

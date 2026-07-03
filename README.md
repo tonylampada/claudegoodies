@@ -17,6 +17,9 @@ demo - [video]([https://www.loom.com/share/e4a9f544efd04fedb208311b66104fda](htt
 * hook configuration - [settings.json](https://gist.github.com/tonylampada/9d3c52d108f9939c001047e425395f6b)
 * hook script - [notification.sh](https://gist.github.com/tonylampada/df613200d70272ae87b3276a008548ff)
 
+### 🧭 [Bridge](./skills/bridge)
+A live "agent OS board": a local web UI where a human watches an AI agent's work state as a kanban board and talks to the agent in context. Zero-dependency node server + `bridge-axi` CLI; any agent with shell access can drive it.
+
 ## Included Tools
 
 ### 📬 [AgentMail listener](./tools/agentmail-listen.md)
