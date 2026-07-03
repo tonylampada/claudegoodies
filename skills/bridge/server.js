@@ -110,6 +110,25 @@ function broadcast() {
 }
 setInterval(() => { for (const res of sseClients) res.write(': ping\n\n'); }, 25000).unref();
 
+// ---------- awaiting-agent tracking ----------
+// In-memory by design: "awaiting reply" is a transient UI signal. A restart clears it,
+// while the durable feedback jsonl still carries the messages themselves.
+const awaiting = new Set(); // targets with user feedback not yet answered by an agent message
+function statusEvent() {
+  return 'event: status\ndata: ' + JSON.stringify({ awaiting: Array.from(awaiting) }) + '\n\n';
+}
+function broadcastStatus() { const payload = statusEvent(); for (const res of sseClients) res.write(payload); }
+function setAwaiting(target, on) {
+  const changed = on ? !awaiting.has(target) : awaiting.delete(target);
+  if (on) awaiting.add(target);
+  if (changed) broadcastStatus();
+}
+function pruneAwaiting() { // drop targets whose card/thread no longer exists
+  let changed = false;
+  for (const t of Array.from(awaiting)) if (!threadFor(t)) { awaiting.delete(t); changed = true; }
+  if (changed) broadcastStatus();
+}
+
 // ---------- helpers ----------
 function sendJson(res, code, obj) {
   const body = JSON.stringify(obj);
@@ -147,12 +166,12 @@ const server = http.createServer(async (req, res) => {
     if (route === 'GET /api/board') return sendJson(res, 200, board);
     if (route === 'GET /api/config') return sendJson(res, 200, userConfig());
     if (route === 'GET /api/status') {
-      return sendJson(res, 200, { board: opts.board, port: opts.port, cards: board.cards.length, feedback_seq: seq, pid: process.pid });
+      return sendJson(res, 200, { board: opts.board, port: opts.port, cards: board.cards.length, feedback_seq: seq, awaiting: Array.from(awaiting), pid: process.pid });
     }
     if (route === 'POST /api/board') {
       const doc = JSON.parse(await readBody(req));
       board = Object.assign(defaultBoard(), doc);
-      saveBoard(); broadcast();
+      saveBoard(); broadcast(); pruneAwaiting();
       return sendJson(res, 200, { ok: true, updated: board.updated });
     }
     if (route === 'PATCH /api/cards') {
@@ -171,7 +190,7 @@ const server = http.createServer(async (req, res) => {
         }
       }
       for (const id of body.remove || []) board.cards = board.cards.filter((c) => c.id !== id);
-      saveBoard(); broadcast();
+      saveBoard(); broadcast(); pruneAwaiting();
       return sendJson(res, 200, { ok: true, cards: board.cards.length });
     }
     if (route === 'POST /api/message') {
@@ -179,7 +198,7 @@ const server = http.createServer(async (req, res) => {
       const thread = threadFor(body.target);
       if (!thread) return sendJson(res, 404, { error: 'unknown target: ' + body.target });
       thread.push({ author: body.author || 'agent', text: String(body.text_md || body.text || ''), ts: now() });
-      saveBoard(); broadcast();
+      saveBoard(); broadcast(); setAwaiting(body.target, false);
       return sendJson(res, 200, { ok: true });
     }
     if (route === 'POST /api/feedback') {
@@ -188,7 +207,7 @@ const server = http.createServer(async (req, res) => {
       if (!thread) return sendJson(res, 404, { error: 'unknown target: ' + body.target });
       thread.push({ author: 'user', text: String(body.text || ''), ts: now() });
       const ev = pushFeedback(body.target, String(body.text || ''));
-      saveBoard(); broadcast();
+      saveBoard(); broadcast(); setAwaiting(body.target, true);
       return sendJson(res, 200, { ok: true, seq: ev.seq });
     }
     if (route === 'GET /api/poll') {
@@ -208,6 +227,7 @@ const server = http.createServer(async (req, res) => {
     if (route === 'GET /api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
       res.write('event: board\ndata: ' + JSON.stringify(board) + '\n\n');
+      res.write(statusEvent());
       sseClients.add(res);
       req.on('close', () => sseClients.delete(res));
       return;

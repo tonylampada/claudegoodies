@@ -131,7 +131,8 @@ async function cmdStatus() {
   const st = await serverUp();
   if (!st) { console.log('server: down (port ' + opts.port + ')'); process.exit(1); }
   const pending = Math.max(0, st.feedback_seq - readCursor());
-  console.log('server: up  board=' + st.board + '  cards=' + st.cards + '  pending-feedback=' + pending + '  url=http://localhost:' + opts.port + '/');
+  const awaiting = Array.isArray(st.awaiting) ? st.awaiting.length : 0;
+  console.log('server: up  board=' + st.board + '  cards=' + st.cards + '  pending-feedback=' + pending + '  awaiting-reply=' + awaiting + '  url=http://localhost:' + opts.port + '/');
 }
 
 async function cmdStop() {

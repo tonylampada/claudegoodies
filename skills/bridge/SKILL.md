@@ -15,8 +15,10 @@ it live and replies in context. Agent-agnostic: any agent with shell access can 
 - **Server** (`server.js`): node built-ins only, zero deps, single file. State persists in
   `~/.bridge/boards/<name>.json` and survives restarts.
 - **CLI** (`bridge-axi`): the agent's whole interface. Never talk HTTP directly; use the CLI.
-- **UI** (`ui.html`): dark command-bridge kanban. SSE live updates, card drawer with markdown
-  detail + thread, global chat dock, optional voice for new agent messages.
+- **UI** (`ui.html`): dark command-bridge kanban. Responsive full-width columns (per-column
+  scroll, fixed headers), SSE live updates, card drawer with markdown detail + thread, global
+  chat dock, header filter (`/` focuses, Esc clears), "agent is working…" typing indicators plus
+  a connectivity/activity status dot, optional voice for new agent messages.
 
 ## CLI
 
@@ -40,6 +42,10 @@ Rules:
   (`~/.bridge/boards/<name>.cursor`), so nothing is lost between polls. Run it as a tracked
   background task; when it exits, read its stdout lines, handle them, re-run it.
 - Each feedback line: `{"seq":N,"target":"chat"|"card:<id>","text":"…","ts":"…"}`.
+- The server tracks targets awaiting an agent reply (set by user feedback, cleared by `say` to
+  that target). Exposed as `awaiting` in `GET /api/status` (in-memory; resets on restart) and
+  streamed over SSE — the UI shows per-thread typing indicators and a global status dot from it.
+  So: always answer feedback with `say <target>`, or the board keeps showing "agent is working…".
 
 ## Board doc schema
 

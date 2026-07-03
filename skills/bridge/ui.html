@@ -17,20 +17,29 @@
     background: var(--bg); color: var(--text);
     font: 14px/1.45 "SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
     overflow: hidden;
+    display: flex; flex-direction: column;
   }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
 
   /* header */
   header {
-    display: flex; align-items: baseline; gap: 12px;
+    display: flex; align-items: baseline; gap: 12px; flex: none;
     padding: 10px 18px; border-bottom: 1px solid var(--line);
     background: linear-gradient(180deg, var(--bg2), var(--bg));
   }
   header h1 { font-size: 17px; font-weight: 600; letter-spacing: .5px; }
   header .subtitle { color: var(--dim); font-size: 12.5px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); align-self: center; flex: none; transition: background .3s; }
-  #live-dot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  #status-dot { font-size: 12px; align-self: center; flex: none; cursor: default; white-space: nowrap; }
+  #filter-wrap { display: flex; align-items: center; gap: 6px; align-self: center; flex: none; }
+  #filter {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px; color: var(--text);
+    font: inherit; font-size: 12px; padding: 3px 8px; width: 180px; outline: none;
+  }
+  #filter:focus { border-color: var(--accent2); }
+  #filter-n { color: var(--dim); font-size: 11px; white-space: nowrap; }
+  #filter-clear { display: none; background: none; border: none; color: var(--dim); cursor: pointer; font: inherit; font-size: 12px; padding: 0 2px; }
+  #filter-clear:hover { color: var(--text); }
   #voice-btn {
     background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--dim);
     padding: 3px 9px; cursor: pointer; font: inherit; font-size: 13px; align-self: center;
@@ -48,15 +57,18 @@
   }
   #voice-select:hover, #voice-test:hover { border-color: var(--accent2); color: var(--accent); }
 
-  /* board */
-  #board { display: flex; gap: 14px; padding: 16px 18px; height: calc(100% - 46px); overflow-x: auto; align-items: flex-start; }
-  .column { flex: 0 0 300px; max-height: 100%; display: flex; flex-direction: column; }
+  /* board: columns share the full viewport width; each scrolls internally under a fixed header */
+  #board { flex: 1; min-height: 0; display: flex; gap: 14px; padding: 16px 18px; overflow-x: auto; }
+  .column { flex: 1 1 0; min-width: 280px; min-height: 0; display: flex; flex-direction: column; }
   .column h2 {
-    font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+    flex: none; font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
     color: var(--dim); padding: 2px 4px 8px; display: flex; justify-content: space-between;
   }
   .column h2 .count { color: var(--faint); }
-  .cards { overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; }
+  .cards { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; }
+  @media (max-width: 720px) {
+    .column { flex: 0 0 min(320px, 85vw); } /* phone: fixed-width columns, swipe horizontally */
+  }
   .card {
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     padding: 10px 12px; cursor: pointer; transition: border-color .15s;
@@ -113,6 +125,12 @@
   .msg.agent { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 3px; }
   .msg.user { align-self: flex-end; background: #1d3a52; border: 1px solid #2b5578; border-bottom-right-radius: 3px; }
   .msg .ts { display: block; color: var(--faint); font-size: 10px; margin-top: 3px; }
+  .msg.typing { display: flex; align-items: center; gap: 4px; }
+  .msg.typing .tdot { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); animation: typing-blink 1.2s infinite; }
+  .msg.typing .tdot:nth-child(2) { animation-delay: .2s; }
+  .msg.typing .tdot:nth-child(3) { animation-delay: .4s; }
+  .msg.typing .lbl { color: var(--faint); font-size: 11px; margin-left: 4px; }
+  @keyframes typing-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
   .composer { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
   .composer input {
     flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
@@ -140,9 +158,14 @@
 </head>
 <body>
 <header>
-  <div id="live-dot" title="live connection"></div>
   <h1 id="b-title">bridge</h1>
   <div class="subtitle" id="b-subtitle"></div>
+  <span id="filter-wrap">
+    <input id="filter" placeholder="type to filter ( / )" autocomplete="off">
+    <span id="filter-n"></span>
+    <button id="filter-clear" title="clear filter">✕</button>
+  </span>
+  <span id="status-dot" title="connecting…">🔴</span>
   <button id="voice-btn" title="speak new agent messages">🔊 off</button>
   <span id="voice-tools" class="dim">
     <select id="voice-select" title="TTS voice"></select>
@@ -187,6 +210,8 @@ let openCardId = null;
 let voiceOn = false;
 let firstLoad = true;
 const seenMsgs = new Set();
+let awaiting = new Set(); // targets awaiting an agent reply (from server status events)
+let sseConnected = false;
 
 // ---------- utils ----------
 function esc(s) {
@@ -354,13 +379,34 @@ function trackMessages() {
   firstLoad = false;
 }
 
+// ---------- status dot (connectivity + agent activity) ----------
+function updateStatusDot() {
+  const el = document.getElementById('status-dot');
+  if (!sseConnected) {
+    el.textContent = '🔴';
+    el.title = 'disconnected — reconnecting…';
+  } else if (awaiting.size) {
+    el.textContent = awaiting.size > 1 ? '🟠 ' + awaiting.size : '🟠';
+    el.title = 'connected — agent working on ' + awaiting.size + ' pending message' + (awaiting.size > 1 ? 's' : '');
+  } else {
+    el.textContent = '🟢';
+    el.title = 'connected — agent idle';
+  }
+}
+
 // ---------- render ----------
-function renderThread(el, thread) {
+function renderThread(el, thread, target) {
   const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-  el.innerHTML = (thread || []).map((m) =>
+  let html = (thread || []).map((m) =>
     '<div class="msg ' + (m.author === 'user' ? 'user' : 'agent') + '"><div class="md">' + md(m.text) + '</div>' +
     '<span class="ts">' + esc(m.author) + ' · ' + hhmm(m.ts) + '</span></div>'
   ).join('');
+  if (target && awaiting.has(target)) {
+    html += '<div class="msg agent typing" title="the agent is working on this">' +
+      '<span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>' +
+      '<span class="lbl">agent is working…</span></div>';
+  }
+  el.innerHTML = html;
   if (pinned) el.scrollTop = el.scrollHeight;
 }
 
@@ -449,9 +495,12 @@ function render() {
   }
 
   // global chat
-  renderThread(document.getElementById('chat-thread'), doc.chat || []);
+  renderThread(document.getElementById('chat-thread'), doc.chat || [], 'chat');
   const n = (doc.chat || []).length;
   document.getElementById('chat-n').textContent = n ? String(n) : '';
+  document.querySelector('#chat-toggle span').textContent = awaiting.has('chat') ? '💬 chat ⏳' : '💬 chat';
+
+  applyFilter();
 }
 
 function renderDrawer(card) {
@@ -468,12 +517,64 @@ function renderDrawer(card) {
     ownerEl.style.display = 'none';
   }
   document.getElementById('d-detail').innerHTML = md(card.detail_md || '');
-  renderThread(document.getElementById('d-thread'), card.thread || []);
+  renderThread(document.getElementById('d-thread'), card.thread || [], 'card:' + card.id);
 }
 function openDrawer(id) { openCardId = id; render(); }
 function closeDrawer() { openCardId = null; document.getElementById('drawer').classList.remove('open'); render(); }
 document.getElementById('d-close').onclick = closeDrawer;
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+
+// ---------- filter (pure client-side; re-applied after every render) ----------
+const filterInput = document.getElementById('filter');
+function cardHaystack(c) {
+  const col = ((doc && doc.columns) || []).find((k) => k.id === c.column);
+  return [c.title, c.id, c.summary, c.owner,
+    (c.badges || []).map((b) => b.text).join(' '),
+    (c.links || []).map((l) => l.text + ' ' + l.url).join(' '),
+    col ? (col.title || col.id) : (c.column || '')
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+function applyFilter() {
+  const q = filterInput.value.trim().toLowerCase();
+  const boardEl = document.getElementById('board');
+  let shown = 0, total = 0;
+  boardEl.querySelectorAll('.card').forEach((el) => {
+    total++;
+    const c = ((doc && doc.cards) || []).find((x) => x.id === el.dataset.id);
+    const ok = !q || (c && cardHaystack(c).includes(q));
+    el.style.display = ok ? '' : 'none';
+    if (ok) shown++;
+  });
+  // hide owner group headers whose cards are all filtered out
+  boardEl.querySelectorAll('.cards').forEach((wrap) => {
+    let head = null, any = false;
+    for (const child of wrap.children) {
+      if (child.classList.contains('owner-head')) {
+        if (head) head.style.display = any ? '' : 'none';
+        head = child; any = false;
+      } else if (child.classList.contains('card') && child.style.display !== 'none') any = true;
+    }
+    if (head) head.style.display = any ? '' : 'none';
+  });
+  document.getElementById('filter-n').textContent = q ? shown + '/' + total : '';
+  document.getElementById('filter-clear').style.display = q ? 'inline' : 'none';
+}
+function clearFilter() { filterInput.value = ''; applyFilter(); }
+filterInput.oninput = applyFilter;
+filterInput.onkeydown = function (e) {
+  if (e.key === 'Escape') { clearFilter(); filterInput.blur(); e.stopPropagation(); }
+};
+document.getElementById('filter-clear').onclick = clearFilter;
+
+document.addEventListener('keydown', (e) => {
+  const active = document.activeElement;
+  if (e.key === '/' && active !== filterInput && !/^(INPUT|TEXTAREA|SELECT)$/.test((active && active.tagName) || '')) {
+    e.preventDefault(); filterInput.focus(); return;
+  }
+  if (e.key === 'Escape') {
+    if (openCardId) closeDrawer();
+    else if (filterInput.value) clearFilter();
+  }
+});
 
 // ---------- feedback ----------
 async function sendFeedback(target, text) {
@@ -509,10 +610,17 @@ function connect() {
     trackMessages();
     render();
   });
-  es.onopen = () => document.getElementById('live-dot').classList.add('on');
-  es.onerror = () => document.getElementById('live-dot').classList.remove('on');
+  es.addEventListener('status', (e) => {
+    const st = JSON.parse(e.data);
+    awaiting = new Set(st.awaiting || []);
+    updateStatusDot();
+    render();
+  });
+  es.onopen = () => { sseConnected = true; updateStatusDot(); };
+  es.onerror = () => { sseConnected = false; updateStatusDot(); };
 }
 connect();
+updateStatusDot();
 setInterval(render, 60000); // refresh "ago" labels
 </script>
 </body>
