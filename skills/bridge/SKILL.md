@@ -48,7 +48,7 @@ Rules:
   "title": "…", "subtitle": "…",
   "columns": [{"id": "inflight", "title": "🔨 In flight"}],
   "cards": [{
-    "id": "…", "column": "inflight", "title": "…", "summary": "…",
+    "id": "…", "column": "inflight", "title": "…", "summary": "…", "owner": "firstmate (optional; groups/colors cards per owning agent)",
     "badges": [{"text": "CI green", "tone": "success|warn|danger|info|neutral"}],
     "links": [{"text": "PR #123", "url": "https://…"}],
     "detail_md": "…", "thread": [{"author": "agent|user", "text": "…", "ts": "…"}]
