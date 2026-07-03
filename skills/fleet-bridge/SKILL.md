@@ -23,7 +23,7 @@ Firstmate-specific usage of the generic `bridge` skill. The bridge is agent-agno
 | Secondmate homes (`data/secondmates.md` → its `data/backlog.md` + `state/*.meta`) | same columns, `owner: "<secondmate-id>"` |
 
 - Every card carries `owner`: `"firstmate"` or the secondmate id. Read secondmate state from its home (read-only); never steer it via the board.
-- Column titles, badges, and chrome-ish labels in ENGLISH; card prose (summary/detail_md) may be Portuguese (captain-facing content).
+- EVERYTHING on the board is ENGLISH — column titles, badges, card prose (summary/detail_md), chat and card-thread replies. The captain's native-language conversation stays in the agent chat, never on the bridge.
 - Captain-facing language rules apply (outcomes, not machinery; full PR URLs in links).
 - Standing cards: `merge-queue` (main fleet PR queue), `sm-merge-queue` (secondmate PR queue), `bridge-v1` (the experiment's own feedback card).
 
