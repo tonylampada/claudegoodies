@@ -160,6 +160,19 @@ function parseAliases(file) {
 // ---------- card assembly for one home ----------
 const COLUMN_RANK = { inflight: 0, waiting: 1, done: 2 };
 
+// Done-verb badges this generator emits (plus any card-specific parsed verb).
+// A promoted target must not stay tagged with one while it is back in flight.
+const DONE_VERB_BADGES = new Set(['merged', 'reported', 'fixed', 'shipped', 'done']);
+function promotionBadges(badges, extraVerb) {
+  const out = (Array.isArray(badges) ? badges : []).filter((b) => {
+    if (!b) return false;
+    const t = String(b.text || '').toLowerCase();
+    return !DONE_VERB_BADGES.has(t) && t !== String(extraVerb || '').toLowerCase() && t !== 'reworking';
+  });
+  out.push({ text: 'reworking', tone: 'warn' });
+  return out;
+}
+
 function cardsForHome(home, owner, windows) {
   const backlog = parseBacklog(path.join(home, 'data', 'backlog.md'));
   const metas = parseMetas(path.join(home, 'state'));
@@ -254,6 +267,7 @@ function cardsForHome(home, owner, windows) {
       }
       const verb = c.verb || 'done';
       badges.push({ text: verb, tone: (verb === 'merged' || verb === 'reported') ? 'success' : 'info' });
+      card._doneVerb = verb; // temp, for alias promotion badge rewrite; stripped in main()
     } else {
       for (const pr of c.prs) {
         const n = prNumber(pr);
@@ -310,9 +324,16 @@ function main() {
   const pendingPromos = [];
   for (const p of promos) {
     const t = upsert.find((c) => c.id === p.target);
-    if (t) t.column = 'inflight';
-    else pendingPromos.push(p);
+    if (t) {
+      t.column = 'inflight';
+      // no stale done-verb badge on an in-flight card; mark it as being reworked
+      // (links stay: the done entry's PR link is the very PR being amended)
+      t.badges = promotionBadges(t.badges, t._doneVerb);
+    } else {
+      pendingPromos.push(p);
+    }
   }
+  for (const c of upsert) delete c._doneVerb; // internal annotation, never emitted
 
   const doc = { upsert, remove: [] };
 
@@ -336,11 +357,12 @@ function main() {
     return request('GET', base + '/api/board');
   }).then((board) => {
     const boardCards = (board && Array.isArray(board.cards) ? board.cards : []);
-    // Deferred alias promotions: target exists on the board -> minimal column patch
-    // (the server merge keeps every other field); unknown target -> advisory only.
-    const boardIds = new Set(boardCards.filter((c) => c && c.id).map((c) => c.id));
+    // Deferred alias promotions: target exists on the board -> minimal column patch,
+    // with its current board badges rewritten (done-verb stripped, "reworking" added);
+    // the server merge keeps every other field. Unknown target -> advisory only.
     for (const p of pendingPromos) {
-      if (boardIds.has(p.target)) upsert.push({ id: p.target, column: 'inflight' });
+      const bc = boardCards.find((c) => c && c.id === p.target);
+      if (bc) upsert.push({ id: p.target, column: 'inflight', badges: promotionBadges(bc.badges) });
       else warn('advisory: alias target "' + p.target + '" for task ' + p.task + ' (owner ' + p.owner +
         ') not on board or in generated output; nothing emitted');
     }
