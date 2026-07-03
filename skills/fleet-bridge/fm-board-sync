@@ -1,27 +1,36 @@
 #!/usr/bin/env node
-// fm-board-sync — deterministic bridge-board generator from a firstmate home's on-disk state.
-// Reads data/backlog.md, state/*.meta, data/secondmates.md (read-only) and emits
-// {"upsert":[...],"remove":[]} card upserts for PATCH /api/cards on the bridge server.
-// Node built-ins only, zero deps. Never writes to the firstmate home.
+// fm-board-sync — event/attribute FEEDER from a firstmate home's on-disk state
+// onto a bridge v2 board. Node built-ins only, zero deps. Never writes to the
+// firstmate home; never moves columns; never touches title/body/labels of
+// existing cards. Column moves are deliberate lifecycle acts of the agent or
+// the human — this generator only feeds.
+//
+// What it does per run:
+//   1. Ensures the canonical 4-column frame (PUT /api/columns, idempotent).
+//   2. Creates cards for NEW in-flight work (backlog In flight + live state/*.meta),
+//      born in "working" with type/repo/owner attributes and a seed body.
+//   3. Appends timeline events for detected signals, deduped by exact text:
+//        - "PR opened <url>" when meta records pr=          (level 2)
+//        - status-file lines: done/failed/needs-decision/blocked -> level 1
+//          (success/alert/question/alert), other lines -> level 2
+//   4. Patches pr / pr_state attributes when they change.
+//   5. Archives a card when its task lands in backlog Done with verb "merged"
+//      (kill = archive; the card leaves the board, one level-1 ✅ notification).
+//
+// Aliases: <home>/data/board-aliases lines "<task-id> <card-id>" feed a task's
+// events/attributes onto an existing card (e.g. a captain-created card that
+// became real work, or a follow-up task amending an earlier card) instead of
+// creating a new one.
 //
 // Usage:
-//   fm-board-sync [--home <path>] [--owner <name>] [--no-secondmates] [--done <n>]
+//   fm-board-sync [--home <path>] [--owner <name>] [--no-secondmates]
 //                 [--apply] [--port <p>] [--board <name>]
-//
-// Without --apply: prints the raw generated JSON to stdout (full cards, no board diff).
-// With --apply: PATCHes the local bridge server (defaults match bridge-axi: port 4777,
-// board "default") and prints the server reply; also prints an advisory stderr line
-// listing task-shaped board cards owned by an emitted owner that were NOT regenerated
-// (possible stale cards). remove is never computed automatically — standing/hand-made
-// cards survive. Sticky curation (--apply only): for card ids already on the board,
-// title and summary are stripped from the upsert so human retouches persist; brand-new
-// cards keep the generated title/summary as a seed.
+// Without --apply: prints the planned actions as JSON (nothing is sent).
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { execFileSync } = require('child_process');
 
 function warn(msg) { process.stderr.write('fm-board-sync: ' + msg + '\n'); }
 
@@ -31,7 +40,6 @@ const opts = {
   home: process.env.FM_HOME || process.cwd(),
   owner: 'firstmate',
   secondmates: true,
-  done: 5,
   apply: false,
   port: 4777,
   board: 'default',
@@ -40,81 +48,59 @@ for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--home') opts.home = argv[++i];
   else if (a === '--owner') opts.owner = argv[++i];
-  else if (a === '--include-secondmates') opts.secondmates = true;
   else if (a === '--no-secondmates') opts.secondmates = false;
-  else if (a === '--done') opts.done = parseInt(argv[++i], 10) || 0;
   else if (a === '--apply') opts.apply = true;
   else if (a === '--port') opts.port = parseInt(argv[++i], 10);
   else if (a === '--board') opts.board = argv[++i];
   else { warn('unknown option: ' + a); process.exit(2); }
 }
+const BASE = 'http://127.0.0.1:' + opts.port;
 
-// ---------- canonical column frame (skill-owned; reproduced on every --apply) ----------
-// ids match the column placement this generator assigns (inflight/waiting/done); ideas is
-// part of the declared frame but has no generator card mapping (hand-curated cards only).
+// ---------- canonical column frame (skill-owned) ----------
 const COLUMNS = [
-  { id: 'inflight', title: '🔨 In flight' },
-  { id: 'waiting', title: '⏳ Awaiting merge (captain)' },
-  { id: 'done', title: '✅ Delivered (recent)' },
-  { id: 'ideas', title: '💡 Ideas / Discussion' },
+  { id: 'ideas', title: '💡 Ideas' },
+  { id: 'working', title: '🔨 Working' },
+  { id: 'review', title: '👀 Your review' },
+  { id: 'peer', title: '🤝 Peer review' },
 ];
+const BIRTH_COLUMN = 'working'; // new detected work is already being worked
 
 // ---------- helpers ----------
 function readFileSafe(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch (e) { return null; }
 }
-
-// Live tmux windows ("session:window_name"); null when tmux is unavailable
-// (then window liveness is unknown and nothing is demoted on that basis).
-function liveWindows() {
-  try {
-    const out = execFileSync('tmux', ['list-windows', '-a', '-F', '#{session_name}:#{window_name}'],
-      { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' });
-    return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
-  } catch (e) { return null; }
-}
-
-function prNumber(url) {
-  const m = /\/pull\/(\d+)/.exec(url);
-  return m ? m[1] : null;
-}
-
-// Trim one trailing "(...)" parenthetical (the "(repo: x, since d)" / "(merged d)" tail).
 function trimTrailingParen(text) {
   return text.replace(/\s*\([^()]*\)\s*$/, '').trim();
 }
 
 // ---------- backlog parsing ----------
-// Returns {inflight:[item], waiting:[item], done:[item]}; item = {id, text, repo, url, verb}.
-// Section switching happens on "## " headings only; deeper "### " headings are free-form
-// notes inside a section and never switch it. Unparseable lines are skipped silently.
+// {inflight:[{id,text,repo}], done:[{id,text,url,verb}]}
 function parseBacklog(file) {
-  const out = { inflight: [], waiting: [], done: [] };
+  const out = { inflight: [], done: [] };
   const src = readFileSafe(file);
   if (src == null) { warn('no backlog at ' + file + ' (skipped)'); return out; }
   let section = null;
   for (const raw of src.split('\n')) {
     const h2 = /^##\s+(.*)$/.exec(raw);
     if (h2) {
-      const t = h2[1].replace(/^[^A-Za-z0-9]+/, ''); // strip emoji/symbol prefix
+      const t = h2[1].replace(/^[^A-Za-z0-9]+/, '');
       if (/^in flight/i.test(t)) section = 'inflight';
-      else if (/PR ready|awaiting.*merge/i.test(t)) section = 'waiting';
       else if (/^done\b/i.test(t)) section = 'done';
-      else section = null; // Queued and free-form h2 sections are ignored in v1
+      else section = null;
       continue;
     }
-    if (/^###/.test(raw)) continue; // free-form sub-heading, keep current section
+    if (/^###/.test(raw)) continue;
     if (!section) continue;
-    const item = /^\s*- \[( |x)\]\s+(\S+)\s+-\s+(.*\S)\s*$/.exec(raw);
+    const item = /^\s*- (?:\[( |x)\]\s+)?\**(\S+?)\**\s+-\s+(.*\S)\s*$/.exec(raw);
     if (!item) continue;
     const id = item[2];
-    let text = item[3];
+    const text = item[3];
     const rec = { id, text, repo: null, url: null, verb: null };
     const repoM = /\(repo:\s*([^,;)]+)/.exec(text);
     if (repoM) rec.repo = repoM[1].trim();
     if (section === 'done') {
-      // "- [x] <id> - <one line> - <url-or-path> (<verb> <date>)"
-      const tail = /^(.*\S)\s+-\s+(\S+)\s+\((\w+)[^)]*\)\s*$/.exec(text);
+      // "- [x] <id> - <one line> - <url-or-path-or-note> (<verb> <date>)"
+      const tail = /^(.*\S)\s+-\s+(.+?)\s+\((\w+)[^)]*\)\s*$/.exec(text);
       if (tail) { rec.text = tail[1]; rec.url = tail[2]; rec.verb = tail[3].toLowerCase(); }
     }
     out[section].push(rec);
@@ -122,37 +108,43 @@ function parseBacklog(file) {
   return out;
 }
 
-// ---------- meta parsing ----------
-// Returns map id -> {kind, mode, window, project, prs:[url]}.
+// ---------- meta / status parsing ----------
 function parseMetas(stateDir) {
-  const metas = new Map();
+  const metas = new Map(); // id -> {kind, project, prs[]}
   let names;
   try { names = fs.readdirSync(stateDir).filter((n) => n.endsWith('.meta')).sort(); }
-  catch (e) { warn('no state dir at ' + stateDir + ' (skipped)'); return metas; }
+  catch (e) { return metas; }
   for (const name of names) {
     const id = name.slice(0, -'.meta'.length);
     const src = readFileSafe(path.join(stateDir, name));
     if (src == null) continue;
-    const m = { kind: null, mode: null, window: null, project: null, projects: null, prs: [] };
+    const m = { kind: null, project: null, prs: [] };
     for (const line of src.split('\n')) {
       const kv = /^(\w+)=(.*)$/.exec(line.trim());
       if (!kv) continue;
-      const [, k, v] = kv;
-      if (k === 'pr') { if (v && !m.prs.includes(v)) m.prs.push(v); }
-      else if (k in m) m[k] = v;
+      if (kv[1] === 'pr') { if (kv[2] && !m.prs.includes(kv[2])) m.prs.push(kv[2]); }
+      else if (kv[1] in m) m[kv[1]] = kv[2];
     }
     metas.set(id, m);
   }
   return metas;
 }
+function parseStatus(stateDir, id) {
+  const src = readFileSafe(path.join(stateDir, id + '.status'));
+  if (src == null) return [];
+  return src.split('\n').map((s) => s.trim()).filter(Boolean);
+}
 
-// ---------- board aliases ----------
-// Optional <home>/data/board-aliases: "<task-id> <card-id>" lines (# comments, blanks ok).
-// An aliased task (e.g. a follow-up amending an existing PR) emits NO card of its own;
-// while it is in flight its liveness promotes the TARGET card's column to inflight for
-// this sync. Task ids are home-local; the target is the FINAL board card id (bare or
-// owner-prefixed). When the aliased task disappears, the target falls back to its own
-// record's column — no special handling.
+// status line -> {level, kind} (handoff-worthy signals are level 1)
+function classifyStatusLine(line) {
+  if (/^done\b/i.test(line)) return { level: 1, kind: 'success' };
+  if (/^failed\b/i.test(line)) return { level: 1, kind: 'alert' };
+  if (/^needs-decision\b/i.test(line)) return { level: 1, kind: 'question' };
+  if (/^blocked\b/i.test(line)) return { level: 1, kind: 'alert' };
+  return { level: 2, kind: 'info' };
+}
+
+// ---------- aliases: "<task-id> <card-id>" ----------
 function parseAliases(file) {
   const map = new Map();
   const src = readFileSafe(file);
@@ -167,138 +159,7 @@ function parseAliases(file) {
   return map;
 }
 
-// ---------- card assembly for one home ----------
-const COLUMN_RANK = { inflight: 0, waiting: 1, done: 2 };
-
-// Done-verb badges this generator emits (plus any card-specific parsed verb).
-// A promoted target must not stay tagged with one while it is back in flight.
-const DONE_VERB_BADGES = new Set(['merged', 'reported', 'fixed', 'shipped', 'done']);
-function promotionBadges(badges, extraVerb) {
-  const out = (Array.isArray(badges) ? badges : []).filter((b) => {
-    if (!b) return false;
-    const t = String(b.text || '').toLowerCase();
-    return !DONE_VERB_BADGES.has(t) && t !== String(extraVerb || '').toLowerCase() && t !== 'reworking';
-  });
-  out.push({ text: 'reworking', tone: 'warn' });
-  return out;
-}
-
-function cardsForHome(home, owner, windows) {
-  const backlog = parseBacklog(path.join(home, 'data', 'backlog.md'));
-  const metas = parseMetas(path.join(home, 'state'));
-  const cards = new Map(); // task id -> card draft {column, title, summary, repo, kind, prs[], doneUrl, verb}
-
-  function draft(id) {
-    if (!cards.has(id)) cards.set(id, { column: null, title: id, summary: null, repo: null, kind: null, prs: [], doneUrl: null, verb: null });
-    return cards.get(id);
-  }
-
-  // In-flight backlog items.
-  for (const it of backlog.inflight) {
-    const c = draft(it.id);
-    c.column = 'inflight';
-    c.title = trimTrailingParen(it.text) || it.id;
-    c.summary = it.text;
-    if (it.repo) c.repo = it.repo;
-  }
-
-  // Live meta files (union with backlog; meta-only tasks still get an inflight card).
-  for (const [id, m] of metas) {
-    // A secondmate's own work is represented via recursion into its home; no self-card.
-    if (m.kind === 'secondmate') { cards.delete(id); continue; }
-    const c = draft(id);
-    if (!c.column) c.column = 'inflight';
-    if (m.kind) c.kind = m.kind;
-    // For a secondmate the project= points at its own home; badge its projects= list instead.
-    if (!c.repo) c.repo = m.kind === 'secondmate' ? m.projects : (m.project && path.basename(m.project));
-    for (const pr of m.prs) if (!c.prs.includes(pr)) c.prs.push(pr);
-    // pr recorded but window gone -> awaiting merge, not actively worked.
-    if (m.prs.length && windows && m.window && /^[^:]+:.+$/.test(m.window) &&
-        !windows.has(m.window) && c.column === 'inflight') {
-      c.column = 'waiting';
-    }
-  }
-
-  // Waiting-section backlog items override inflight placement.
-  for (const it of backlog.waiting) {
-    const c = draft(it.id);
-    c.column = 'waiting';
-    c.title = trimTrailingParen(it.text) || it.id;
-    c.summary = it.text;
-    if (it.repo) c.repo = it.repo;
-    for (const m of it.text.matchAll(/https?:\/\/\S+/g)) {
-      const url = m[0].replace(/[),.;]+$/, '');
-      if (!c.prs.includes(url)) c.prs.push(url);
-    }
-  }
-
-  // Most-recent Done entries (the section lists newest first). Merged work is OFF the
-  // board: verb "merged" is the fully-finished terminal state with nothing actionable
-  // left, so those entries never emit; shipped/reported/fixed/etc still do (the done
-  // column means delivered-awaiting-action). Reuses the same done-tail verb parse the
-  // alias promotion relies on.
-  for (const it of backlog.done.filter((d) => (d.verb || '') !== 'merged').slice(0, opts.done)) {
-    const c = draft(it.id);
-    c.column = 'done';
-    c.title = trimTrailingParen(it.text) || it.id;
-    c.summary = it.text;
-    if (it.repo) c.repo = it.repo;
-    c.doneUrl = it.url;
-    c.verb = it.verb;
-  }
-
-  // Alias resolution: aliased tasks emit no card; a live (inflight) aliased task
-  // promotes its target card to inflight. Resolution happens in main(), because the
-  // target may live in another owner's output or only on the board.
-  const promos = [];
-  const aliases = parseAliases(path.join(home, 'data', 'board-aliases'));
-  for (const [taskId, target] of aliases) {
-    const c = cards.get(taskId);
-    if (!c || !c.column) continue; // task gone -> alias dormant, target falls back naturally
-    cards.delete(taskId);
-    if (c.column === 'inflight') promos.push({ target, task: taskId, owner });
-  }
-
-  // Materialize board cards.
-  const out = [];
-  for (const [id, c] of cards) {
-    if (!c.column) continue;
-    const card = {
-      id: owner === 'firstmate' ? id : owner + ':' + id,
-      column: c.column,
-      title: c.title,
-      owner,
-    };
-    if (c.summary) card.summary = c.summary;
-    const badges = [];
-    if (c.repo) badges.push({ text: c.repo, tone: 'info' });
-    if (c.kind && c.kind !== 'ship') badges.push({ text: c.kind, tone: 'neutral' });
-    const links = [];
-    if (c.column === 'done') {
-      if (c.doneUrl && /^https?:\/\//.test(c.doneUrl)) {
-        const n = prNumber(c.doneUrl);
-        links.push({ text: n ? 'PR #' + n : 'link', url: c.doneUrl });
-      }
-      const verb = c.verb || 'done';
-      badges.push({ text: verb, tone: (verb === 'merged' || verb === 'reported') ? 'success' : 'info' });
-      card._doneVerb = verb; // temp, for alias promotion badge rewrite; stripped in main()
-    } else {
-      for (const pr of c.prs) {
-        const n = prNumber(pr);
-        links.push({ text: n ? 'PR #' + n : 'PR', url: pr });
-      }
-      if (c.prs.length) badges.push({ text: 'PR open', tone: 'warn' });
-    }
-    if (badges.length) card.badges = badges;
-    if (links.length) card.links = links;
-    out.push(card);
-  }
-  out.sort((a, b) => (COLUMN_RANK[a.column] - COLUMN_RANK[b.column]) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return { cards: out, promos };
-}
-
 // ---------- secondmate registry ----------
-// "- <id> - <summary> (home: <abs-path>; scope: ...; projects: ...; added <date>)"
 function parseSecondmates(file) {
   const out = [];
   const src = readFileSafe(file);
@@ -310,105 +171,91 @@ function parseSecondmates(file) {
   return out;
 }
 
-// ---------- main ----------
-function main() {
-  const home = path.resolve(opts.home);
-  if (!fs.existsSync(home)) { warn('home does not exist: ' + home); process.exit(0); }
-  const windows = liveWindows();
-  if (windows == null) warn('tmux unavailable; window liveness unknown (no waiting demotion)');
+// ---------- plan for one home ----------
+// Emits {creates:[card], events:[{card,text,level,kind}], attrs:[{card,attributes}],
+//        archives:[{card,reason}]} against the board snapshot.
+function planHome(home, owner, board) {
+  const backlog = parseBacklog(path.join(home, 'data', 'backlog.md'));
+  const stateDir = path.join(home, 'state');
+  const metas = parseMetas(stateDir);
+  const aliases = parseAliases(path.join(home, 'data', 'board-aliases'));
+  const plan = { creates: [], events: [], attrs: [], archives: [] };
 
-  const gen = cardsForHome(home, opts.owner, windows);
-  let upsert = gen.cards;
-  let promos = gen.promos;
-  const owners = new Set([opts.owner]);
+  const cardId = (taskId) =>
+    aliases.get(taskId) || (owner === 'firstmate' ? taskId : owner + ':' + taskId);
+  const boardCard = (id) => (board.cards || []).find((c) => c.id === id);
 
-  if (opts.secondmates) {
-    for (const sm of parseSecondmates(path.join(home, 'data', 'secondmates.md'))) {
-      if (!fs.existsSync(sm.home)) { warn('secondmate home missing: ' + sm.home + ' (skipped)'); continue; }
-      owners.add(sm.id);
-      const g = cardsForHome(sm.home, sm.id, windows);
-      upsert = upsert.concat(g.cards);
-      promos = promos.concat(g.promos);
+  // live tasks = in-flight backlog items U live metas (minus secondmate self-records)
+  const live = new Map(); // taskId -> {title, repo, kind}
+  for (const it of backlog.inflight) {
+    live.set(it.id, { title: trimTrailingParen(it.text) || it.id, repo: it.repo, kind: null });
+  }
+  for (const [id, m] of metas) {
+    if (m.kind === 'secondmate') { live.delete(id); continue; }
+    const t = live.get(id) || { title: id, repo: null, kind: null };
+    if (m.kind) t.kind = m.kind;
+    if (!t.repo && m.project) t.repo = path.basename(m.project);
+    live.set(id, t);
+  }
+
+  // pending events/attrs for a card id, deduped later against board card events
+  for (const [taskId, t] of live) {
+    const id = cardId(taskId);
+    let card = boardCard(id);
+    if (!card) {
+      // NEW work: the only time this feeder creates (and seeds title/body)
+      const type = t.kind === 'scout' ? 'investigation' : 'implementation';
+      const attributes = { type, owner };
+      if (t.repo) attributes.repo = t.repo;
+      card = {
+        id, title: t.title, column: BIRTH_COLUMN, attributes,
+        body: t.title + (t.repo ? ' (' + t.repo + ')' : ''),
+      };
+      plan.creates.push(card);
+      card._new = true;
+    }
+    const have = new Set(((card.events) || []).map((e) => e.text));
+    const addEvent = (text, level, kind) => {
+      if (have.has(text)) return;
+      have.add(text);
+      plan.events.push({ card: id, text, level, kind });
+    };
+
+    // PR recorded in meta -> attribute + one "PR opened" event
+    const m = metas.get(taskId);
+    if (m && m.prs.length) {
+      const pr = m.prs[m.prs.length - 1];
+      const at = (card.attributes) || {};
+      if (at.pr !== pr && !card._new) plan.attrs.push({ card: id, attributes: { pr, pr_state: 'open' } });
+      else if (card._new) { card.attributes.pr = pr; card.attributes.pr_state = 'open'; }
+      addEvent('PR opened: ' + pr, 2, 'info');
+    }
+
+    // status-file lines -> timeline events
+    for (const line of parseStatus(stateDir, taskId)) {
+      const c = classifyStatusLine(line);
+      addEvent(line, c.level, c.kind);
     }
   }
 
-  // Alias promotions whose target is in the generated output: force it inflight.
-  // Targets not generated (curated/standing cards) can only be verified against the
-  // board, so they are deferred to the --apply flow; nothing is ever invented.
-  const pendingPromos = [];
-  for (const p of promos) {
-    const t = upsert.find((c) => c.id === p.target);
-    if (t) {
-      t.column = 'inflight';
-      // no stale done-verb badge on an in-flight card; mark it as being reworked
-      // (links stay: the done entry's PR link is the very PR being amended)
-      t.badges = promotionBadges(t.badges, t._doneVerb);
-    } else {
-      pendingPromos.push(p);
-    }
-  }
-  for (const c of upsert) delete c._doneVerb; // internal annotation, never emitted
-
-  // The column frame is skill-owned: emitted for inspection in stdout mode and pushed on
-  // --apply via the server's idempotent columns field (identical columns = server no-op).
-  const doc = { upsert, remove: [], columns: COLUMNS };
-
-  if (!opts.apply) {
-    for (const p of pendingPromos) {
-      warn('advisory: alias target "' + p.target + '" for task ' + p.task + ' (owner ' + p.owner +
-        ') not in generated output — board not checked without --apply; nothing emitted');
-    }
-    process.stdout.write(JSON.stringify(doc, null, 2) + '\n');
-    return;
+  // merged Done entries -> archive the card (kill = off the board)
+  for (const it of backlog.done) {
+    if ((it.verb || '') !== 'merged') continue;
+    const id = cardId(it.id);
+    const card = boardCard(id);
+    if (!card) continue; // already archived / never on the board
+    const where = it.url && /^https?:\/\//.test(it.url) ? it.url : 'local main';
+    plan.archives.push({ card: id, reason: 'merged: ' + where });
   }
 
-  // Like bridge-axi, the port selects the server; a server serves one board fixed at
-  // launch, so --board is verified against /api/status rather than sent per-request.
-  const base = 'http://127.0.0.1:' + opts.port;
-  request('GET', base + '/api/status').then((st) => {
-    if (st && st.board && st.board !== opts.board) {
-      warn('server on port ' + opts.port + ' serves board "' + st.board + '", not "' + opts.board + '" — not applying');
-      process.exit(1);
-    }
-    return request('GET', base + '/api/board');
-  }).then((board) => {
-    const boardCards = (board && Array.isArray(board.cards) ? board.cards : []);
-    // Deferred alias promotions: target exists on the board -> minimal column patch,
-    // with its current board badges rewritten (done-verb stripped, "reworking" added);
-    // the server merge keeps every other field. Unknown target -> advisory only.
-    for (const p of pendingPromos) {
-      const bc = boardCards.find((c) => c && c.id === p.target);
-      if (bc) upsert.push({ id: p.target, column: 'inflight', badges: promotionBadges(bc.badges) });
-      else warn('advisory: alias target "' + p.target + '" for task ' + p.task + ' (owner ' + p.owner +
-        ') not on board or in generated output; nothing emitted');
-    }
-    const emitted = new Set(upsert.map((c) => c.id));
-    const stale = boardCards
-      .filter((c) => c && owners.has(c.owner) && !emitted.has(c.id) && taskShaped(c.id))
-      .map((c) => c.id);
-    if (stale.length) warn('advisory: board cards not regenerated (stale?): ' + stale.join(', '));
-    // Sticky curation: cards already on the board keep their (possibly hand-retouched)
-    // title/summary — strip both from the upsert so the server merge preserves them.
-    // Brand-new cards keep the generated title/summary as a seed.
-    const existing = new Set(boardCards.filter((c) => c && c.id).map((c) => c.id));
-    for (const c of upsert) {
-      if (existing.has(c.id)) { delete c.title; delete c.summary; }
-    }
-    return request('PATCH', base + '/api/cards', doc);
-  }).then((reply) => {
-    process.stdout.write(JSON.stringify(reply) + '\n');
-  }).catch((e) => { warn('apply failed: ' + e.message); process.exit(1); });
+  return plan;
 }
 
-// Kebab task ids end in a short random suffix (fix-login-k3, thumb-guards-m4).
-function taskShaped(id) {
-  return typeof id === 'string' && /-[a-z]{1,2}\d{1,2}$/.test(id.replace(/^[^:]+:/, ''));
-}
-
-function request(method, url, body) {
+// ---------- http ----------
+function request(method, urlPath, body) {
   return new Promise((resolve, reject) => {
     const data = body == null ? null : JSON.stringify(body);
-    const req = http.request(url, {
+    const req = http.request(BASE + urlPath, {
       method,
       headers: data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {},
       timeout: 10000,
@@ -416,7 +263,7 @@ function request(method, url, body) {
       let out = '';
       res.on('data', (c) => (out += c));
       res.on('end', () => {
-        if (res.statusCode >= 400) return reject(new Error('HTTP ' + res.statusCode + ': ' + out));
+        if (res.statusCode >= 400) return reject(new Error('HTTP ' + res.statusCode + ' ' + urlPath + ': ' + out));
         try { resolve(JSON.parse(out)); } catch (e) { resolve(out); }
       });
     });
@@ -427,4 +274,73 @@ function request(method, url, body) {
   });
 }
 
-main();
+// ---------- main ----------
+async function main() {
+  const home = path.resolve(opts.home);
+  if (!fs.existsSync(home)) { warn('home does not exist: ' + home); process.exit(0); }
+
+  // A server serves one board fixed at launch; verify before feeding anything.
+  let board = { cards: [] };
+  let serverOk = false;
+  try {
+    const st = await request('GET', '/api/status');
+    if (st && st.board && st.board !== opts.board) {
+      warn('server on port ' + opts.port + ' serves board "' + st.board + '", not "' + opts.board + '" — refusing');
+      process.exit(1);
+    }
+    board = await request('GET', '/api/board');
+    serverOk = true;
+  } catch (e) {
+    warn('server not reachable on port ' + opts.port + ': ' + e.message + (opts.apply ? '' : ' (planning against empty board)'));
+    if (opts.apply) process.exit(1);
+  }
+
+  // merge plans across the main home and each secondmate home
+  const plan = { columns: COLUMNS, creates: [], events: [], attrs: [], archives: [] };
+  const homes = [{ home, owner: opts.owner }];
+  if (opts.secondmates) {
+    for (const sm of parseSecondmates(path.join(home, 'data', 'secondmates.md'))) {
+      if (!fs.existsSync(sm.home)) { warn('secondmate home missing: ' + sm.home + ' (skipped)'); continue; }
+      homes.push({ home: sm.home, owner: sm.id });
+    }
+  }
+  for (const h of homes) {
+    const p = planHome(h.home, h.owner, board);
+    plan.creates.push(...p.creates);
+    plan.events.push(...p.events);
+    plan.attrs.push(...p.attrs);
+    plan.archives.push(...p.archives);
+  }
+  for (const c of plan.creates) delete c._new;
+
+  if (!opts.apply) {
+    process.stdout.write(JSON.stringify(plan, null, 2) + '\n');
+    return;
+  }
+
+  // apply: columns (idempotent) -> creates -> attrs -> events -> archives
+  await request('PUT', '/api/columns', plan.columns);
+  let n = { created: 0, events: 0, attrs: 0, archived: 0 };
+  for (const c of plan.creates) {
+    try { await request('POST', '/api/cards', c); n.created++; }
+    catch (e) { warn('create ' + c.id + ' failed: ' + e.message); }
+  }
+  for (const a of plan.attrs) {
+    try { await request('PATCH', '/api/cards/' + encodeURIComponent(a.card), { attributes: a.attributes }); n.attrs++; }
+    catch (e) { warn('attrs ' + a.card + ' failed: ' + e.message); }
+  }
+  for (const ev of plan.events) {
+    try {
+      await request('POST', '/api/cards/' + encodeURIComponent(ev.card) + '/events',
+        { text: ev.text, level: ev.level, kind: ev.kind, actor: 'sync' });
+      n.events++;
+    } catch (e) { warn('event ' + ev.card + ' failed: ' + e.message); }
+  }
+  for (const ar of plan.archives) {
+    try { await request('POST', '/api/cards/' + encodeURIComponent(ar.card) + '/archive', { reason: ar.reason, actor: 'sync' }); n.archived++; }
+    catch (e) { warn('archive ' + ar.card + ' failed: ' + e.message); }
+  }
+  process.stdout.write(JSON.stringify(n) + '\n');
+}
+
+main().catch((e) => { warn(e.message); process.exit(1); });
