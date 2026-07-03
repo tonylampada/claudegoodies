@@ -152,18 +152,20 @@
   .msg.agent { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 3px; }
   .msg.user { align-self: flex-end; background: #1d3a52; border: 1px solid #2b5578; border-bottom-right-radius: 3px; }
   .msg .ts { display: block; color: var(--faint); font-size: 10px; margin-top: 3px; }
+  .msg .pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   .msg.typing { display: flex; align-items: center; gap: 4px; }
   .msg.typing .tdot { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); animation: typing-blink 1.2s infinite; }
   .msg.typing .tdot:nth-child(2) { animation-delay: .2s; }
   .msg.typing .tdot:nth-child(3) { animation-delay: .4s; }
   .msg.typing .lbl { color: var(--faint); font-size: 11px; margin-left: 4px; }
   @keyframes typing-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
-  .composer { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
-  .composer input {
+  .composer { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); align-items: flex-end; }
+  .composer textarea {
     flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
     color: var(--text); padding: 7px 10px; font: inherit; font-size: 13px; outline: none;
+    resize: none; max-height: 120px; overflow-y: auto; line-height: 1.4;
   }
-  .composer input:focus { border-color: var(--accent2); }
+  .composer textarea:focus { border-color: var(--accent2); }
   .composer button {
     background: var(--accent2); border: none; border-radius: 6px; color: #eaf6ff;
     padding: 7px 14px; cursor: pointer; font: inherit; font-size: 13px;
@@ -215,7 +217,7 @@
     <div class="thread" id="d-thread"></div>
   </div>
   <form class="composer" id="d-form">
-    <input id="d-input" placeholder="message this card…" autocomplete="off">
+    <textarea id="d-input" rows="1" placeholder="message this card…" autocomplete="off"></textarea>
     <button type="submit">send</button>
   </form>
 </aside>
@@ -225,7 +227,7 @@
   <div id="chat-panel">
     <div id="chat-thread" class="thread"></div>
     <form class="composer" id="chat-form">
-      <input id="chat-input" placeholder="message the agent…" autocomplete="off">
+      <textarea id="chat-input" rows="1" placeholder="message the agent…" autocomplete="off"></textarea>
       <button type="submit">send</button>
     </form>
   </div>
@@ -434,16 +436,32 @@ function updateStatusDot() {
 // ---------- render ----------
 function renderThread(el, thread, target) {
   const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-  let html = (thread || []).map((m) =>
-    '<div class="msg ' + (m.author === 'user' ? 'user' : 'agent') + '"><div class="md">' + md(m.text) + '</div>' +
-    '<span class="ts">' + esc(m.author) + ' · ' + hhmm(m.ts) + '</span></div>'
-  ).join('');
-  if (target && awaiting.has(target)) {
-    html += '<div class="msg agent typing" title="the agent is working on this">' +
-      '<span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>' +
-      '<span class="lbl">agent is working…</span></div>';
+  el.textContent = '';
+  for (const m of thread || []) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg ' + (m.author === 'user' ? 'user' : 'agent');
+    const body = document.createElement('div');
+    if (m.author === 'user') {
+      body.className = 'md pre';
+      body.textContent = m.text; // user text: verbatim, line breaks kept via pre-wrap
+    } else {
+      body.className = 'md';
+      body.innerHTML = md(m.text); // agent text: escape-first markdown
+    }
+    const ts = document.createElement('span');
+    ts.className = 'ts';
+    ts.textContent = m.author + ' · ' + hhmm(m.ts);
+    wrap.append(body, ts);
+    el.appendChild(wrap);
   }
-  el.innerHTML = html;
+  if (target && awaiting.has(target)) {
+    const t = document.createElement('div');
+    t.className = 'msg agent typing';
+    t.title = 'the agent is working on this';
+    t.innerHTML = '<span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>' +
+      '<span class="lbl">agent is working…</span>'; // static markup, no user text
+    el.appendChild(t);
+  }
   if (pinned) el.scrollTop = el.scrollHeight;
 }
 
@@ -744,18 +762,29 @@ async function sendFeedback(target, text) {
     body: JSON.stringify({ target, text: text.trim() }),
   });
 }
-document.getElementById('d-form').onsubmit = function (e) {
-  e.preventDefault();
-  const input = document.getElementById('d-input');
-  if (openCardId) sendFeedback('card:' + openCardId, input.value);
-  input.value = '';
-};
-document.getElementById('chat-form').onsubmit = function (e) {
-  e.preventDefault();
-  const input = document.getElementById('chat-input');
-  sendFeedback('chat', input.value);
-  input.value = '';
-};
+// multiline composers: Enter sends, Shift+Enter = newline, Cmd/Ctrl+Enter also sends;
+// auto-grow to max-height then scroll, reset to one line after send
+function autoGrow(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px'; }
+function wireComposer(t, send) {
+  t.oninput = () => autoGrow(t);
+  t.onkeydown = (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || !e.shiftKey)) { e.preventDefault(); send(); }
+  };
+}
+const dInput = document.getElementById('d-input');
+const chatInput = document.getElementById('chat-input');
+function sendDrawerMsg() {
+  if (openCardId) sendFeedback('card:' + openCardId, dInput.value);
+  dInput.value = ''; autoGrow(dInput);
+}
+function sendChatMsg() {
+  sendFeedback('chat', chatInput.value);
+  chatInput.value = ''; autoGrow(chatInput);
+}
+wireComposer(dInput, sendDrawerMsg);
+wireComposer(chatInput, sendChatMsg);
+document.getElementById('d-form').onsubmit = function (e) { e.preventDefault(); sendDrawerMsg(); };
+document.getElementById('chat-form').onsubmit = function (e) { e.preventDefault(); sendChatMsg(); };
 document.getElementById('chat-toggle').onclick = function () {
   document.getElementById('chat-dock').classList.toggle('open');
   const t = document.getElementById('chat-thread');
