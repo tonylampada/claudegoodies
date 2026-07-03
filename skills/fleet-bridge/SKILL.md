@@ -18,7 +18,7 @@ Firstmate-specific usage of the generic `bridge` skill. The bridge is agent-agno
 |---|---|
 | `data/backlog.md` In flight + live `state/<id>.meta` | column `inflight`, card id = task id |
 | PRs green awaiting captain merge (incl. brain merge-queue doc) | column `waiting` |
-| Recent Done entries / shipped PRs / scout reports | column `done` |
+| Recent Done entries still awaiting action (shipped PRs, scout reports) | column `done`; merged work is OFF the board |
 | Ongoing discussions & experiments with the captain | column `ideas` |
 | Secondmate homes (`data/secondmates.md` → its `data/backlog.md` + `state/*.meta`) | same columns, `owner: "<secondmate-id>"` |
 
@@ -38,6 +38,10 @@ and emits `{upsert,remove}` card upserts — the board's mechanical skeleton, no
 - Mapping: In flight backlog + live meta → `inflight`; "PR ready / awaiting merge" sections and
   pr=-recorded tasks whose window is gone → `waiting`; recent Done (`--done`, default 5) → `done`.
   Card ids are `<owner>:<task-id>` per secondmate, bare task id for owner `firstmate` (back-compat).
+- **Done column = delivered-awaiting-action; merged = off the board.** Done entries with verb
+  `merged` (fully finished, nothing actionable left) never emit, in every home; `shipped`,
+  `reported`, `fixed`, etc still do. The generator never emits removes, so a merged card already
+  on the board is removed manually once: `bridge-axi card - <<< '{"remove":["<id>"]}'`.
 - Hand-enrichment survives: the generator never emits `detail_md` and never computes `remove`,
   so hand-written detail, threads, extra cards, and standing cards are preserved by the server's
   per-card merge. It only prints an advisory stderr line for task-shaped cards it didn't regenerate.

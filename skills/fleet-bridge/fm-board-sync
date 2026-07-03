@@ -222,8 +222,12 @@ function cardsForHome(home, owner, windows) {
     }
   }
 
-  // Most-recent Done entries (the section lists newest first).
-  for (const it of backlog.done.slice(0, opts.done)) {
+  // Most-recent Done entries (the section lists newest first). Merged work is OFF the
+  // board: verb "merged" is the fully-finished terminal state with nothing actionable
+  // left, so those entries never emit; shipped/reported/fixed/etc still do (the done
+  // column means delivered-awaiting-action). Reuses the same done-tail verb parse the
+  // alias promotion relies on.
+  for (const it of backlog.done.filter((d) => (d.verb || '') !== 'merged').slice(0, opts.done)) {
     const c = draft(it.id);
     c.column = 'done';
     c.title = trimTrailingParen(it.text) || it.id;
