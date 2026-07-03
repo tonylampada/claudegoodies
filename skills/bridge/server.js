@@ -367,8 +367,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === 'GET /api/notifications') {
       const r = userReads(url.searchParams.get('user'));
-      const items = allEvents().filter((e) => e.level === 1).reverse();
-      for (const e of items) e.read = e.seq <= r.notifSeq || r.notifSeqs.includes(e.seq);
+      const items = allEvents().filter((e) => e.level === 1).reverse()
+        .map((e) => Object.assign({}, e, { read: e.seq <= r.notifSeq || r.notifSeqs.includes(e.seq) }));
       return sendJson(res, 200, { items, unread: items.filter((e) => !e.read).length });
     }
 
