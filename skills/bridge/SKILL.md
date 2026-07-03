@@ -1,109 +1,99 @@
 ---
 name: bridge
 description: >
-  Run a live "agent OS board" — a local web UI where a human watches an AI agent's internal work
-  state as a kanban board and talks to the agent in context (per-card threads + global chat).
-  Triggers when the user wants a live board/dashboard of agent work, wants to "open the bridge",
-  or an agent needs a visual command surface for a human to follow along and steer.
+  Run a live "agent board" — a local web UI where a human follows an AI agent's work as a
+  kanban of cards with timelines and notifications, and talks to the agent in context
+  (unified chat with per-card threads). Triggers when the user wants a live board/dashboard
+  of agent work, wants to "open the bridge", or an agent needs a visual command surface for
+  a human to follow along and steer.
 ---
 
 # bridge
 
-A local web board driven entirely by shell commands. The agent pushes its state; the human watches
-it live and replies in context. Agent-agnostic: any agent with shell access can drive it.
+A local web board driven entirely by shell commands. The agent feeds cards, events, and
+messages; the human watches live, replies in context, and moves cards. Agent-agnostic:
+any agent with shell access can drive it.
 
-- **Server** (`server.js`): node built-ins only, zero deps, single file. State persists in
-  `~/.bridge/boards/<name>.json` and survives restarts.
-- **CLI** (`bridge-axi`): the agent's whole interface. Never talk HTTP directly; use the CLI.
-- **UI** (`ui.html`): dark command-bridge kanban. Responsive full-width columns (per-column
-  scroll, fixed headers), SSE live updates, card drawer with markdown detail + thread, global
-  chat dock, header filter (`/` focuses, Esc clears), "agent is working…" typing indicators plus
-  a connectivity/activity status dot, optional voice for new agent messages.
+- **Server** (`server.js`): node built-ins only, zero deps. State persists in
+  `~/.bridge/boards/<name>.json`; archived cards append to `<name>.archive.jsonl`.
+- **CLI** (`bridge-axi`): the agent's whole interface. Never talk HTTP directly; run
+  `bridge-axi` with no args for full usage. All commands take `--port` (default 4777)
+  and `--board` (default `default`).
+- **UI** (`ui/`): vanilla ES modules, no build step. Chat on the left (full height),
+  board on the right; collapses to Chat/Board tabs on phones. Card detail shows
+  attributes + markdown body + event timeline; the "💬 talk" button switches the chat
+  window into that card's thread. Notification bell, drag&drop, long-press move menu,
+  filters, label registry, optional TTS voice.
 
-## CLI
+## Core model
 
-All subcommands take `--port <p>` (default 4777) and `--board <name>` (default `default`).
-The server binds `0.0.0.0` by default, so phones/tablets on the tailnet/LAN can open `http://<machine>:<port>/`; pass `--host 127.0.0.1` to `open` to restrict to local.
-
-```bash
-bridge-axi open                      # start server if needed (idempotent), print URL
-bridge-axi sync board.json           # replace whole board doc (or `-` for stdin)
-bridge-axi card card.json            # upsert/remove cards: {upsert,remove}, an array, or one card
-bridge-axi say chat --text-file f.md # post agent message to global chat
-bridge-axi say card:fix-login-k3 --text-file f.md   # ...or to a card thread (stdin if no flag)
-bridge-axi poll                      # BLOCK until user feedback; print JSON lines; exit
-bridge-axi status                    # up/down, board, card count, pending feedback
-bridge-axi stop                      # stop the server
-```
-
-Rules:
-- Message text goes via `--text-file` or stdin — never interpolated into a shell command.
-- `poll` exits after the first feedback batch and persists its cursor
-  (`~/.bridge/boards/<name>.cursor`), so nothing is lost between polls. Run it as a tracked
-  background task; when it exits, read its stdout lines, handle them, re-run it.
-- Each feedback line: `{"seq":N,"target":"chat"|"card:<id>","text":"…","ts":"…"}`.
-- The server tracks targets awaiting an agent reply (set by user feedback, cleared by `say` to
-  that target). Exposed as `awaiting` in `GET /api/status` (in-memory; resets on restart) and
-  streamed over SSE — the UI shows per-thread typing indicators and a global status dot from it.
-  So: always answer feedback with `say <target>`, or the board keeps showing "agent is working…".
-
-## Board doc schema
-
-```json
-{
-  "title": "…", "subtitle": "…",
-  "columns": [{"id": "inflight", "title": "🔨 In flight"}],
-  "cards": [{
-    "id": "…", "column": "inflight", "title": "…", "summary": "…", "owner": "agent-a (optional; groups/colors cards per owning agent)",
-    "badges": [{"text": "CI green", "tone": "success|warn|danger|info|neutral"}],
-    "labels": ["user-owned", "…"],
-    "links": [{"text": "PR #123", "url": "https://…"}],
-    "detail_md": "…", "thread": [{"author": "agent|user", "text": "…", "ts": "…"}]
-  }],
-  "chat": [{"author": "agent|user", "text": "…", "ts": "…"}],
-  "labels": [{"name": "user-owned", "color": "#4cc2ff"}]
-}
-```
-
-Columns render in doc order; cards render under their `column` id. `card` upserts merge onto the
-existing card and preserve its thread unless you send a new one. `updated` timestamps are set by
-the server when omitted.
-
-`PATCH /api/cards` accepts an optional top-level `columns: [{id, title}]` that replaces
-`board.columns` only — cards, threads, chat, and labels are untouched. Absent = columns left
-alone; present = validated (array of `{id:string, title:string}`) and set. Setting columns
-identical to the current frame is a guarded no-op (nothing saved or broadcast, no `updated`
-churn), so a caller can push the same column frame on every sync idempotently. This is how a
-driver owns the column skeleton without a full-board `POST` (which would wipe threads/chat/cards).
-
-`badges` vs `labels`: badges are agent-owned — replace them freely on sync/upsert. `labels` is
-USER-owned (edited in the card drawer, persisted in board state): never set or rewrite it. Upserts
-and full `sync` docs that omit the field leave existing labels intact (the server carries them
-forward by card id); only sending an explicit `labels` value overwrites. PATCH also accepts
-`update: [...]` which merges onto existing cards only (404s on unknown id, never creates) — the
-UI uses it for label edits.
-The board-level `labels` registry (`{name, color}`, `#rrggbb`) is user-owned too: agents never
-touch it; a `sync` doc without the field inherits the existing registry, and unknown card label
-names auto-register with a palette color. The UI manages it (create/rename/recolor/delete, with
-rename/delete cascading to cards) via `POST /api/labels`
-`{create:{name,color?}} | {rename:{from,to}} | {recolor:{name,color}} | {delete:{name}}`.
-Badges, labels, and owner names in the UI are click-to-filter (AND-composed with the text filter).
+- **Columns are owned state**, ordered, set via `bridge-axi columns` (idempotent). A card
+  sits in exactly one column; every move is a deliberate act that records a timeline event
+  with its actor. Automated feeders must never move cards.
+- **Cards**: `{id, title, column, labels, attributes, body, events, thread}`.
+  - `attributes`: generic key/value pairs (URLs render as links). Well-known keys the UI
+    understands: `type` (sets the tile emoji: plan 📋, implementation 🔧, investigation 🔍,
+    discussion 💬, bug 🐛, idea 💡, task 📌, doc 📄), `emoji` (explicit override),
+    `owner` (colored, groupable, click-to-filter).
+  - `body`: markdown, the card's CURRENT state — rewrite it as work evolves.
+  - `events`: append-only timestamped timeline. Level 2 = timeline only; level 1 = also a
+    notification. Kinds and their signal emojis: `alert` 🚨, `question` ❓, `handoff` 👀,
+    `success` ✅, `info` 💡.
+  - `labels`: USER-owned (edited in the UI, managed registry with colors). Agents never
+    set or rewrite them.
+- **Unified event stream**: board-level events + every card's events, one global sequence.
+  The notification queue is the level-1 slice; suppressed level-2 events expand inline in
+  the bell dropdown. Per-user read state persists server-side in the board file.
+- **Kill = archive**: `bridge-axi archive <id>` snapshots the card to the append-only
+  archive file and removes it from the board. No destructive delete; `bridge-axi archived`
+  lists recent kills.
 
 ## Agent loop
 
-1. `bridge-axi open` — print the URL to the human once.
-2. On every internal state change: `bridge-axi sync` (full doc) or `bridge-axi card` (granular).
-3. Keep `bridge-axi poll` running as a background task. When it exits with feedback lines:
-   handle each (its `target` tells you the context), reply with
-   `bridge-axi say <target> --text-file <f>`, update the board, re-run `poll`.
-4. Repeat until done. `bridge-axi stop` only if the human is finished with the board.
+1. `bridge-axi open` — start the server if needed (idempotent), print the URL once.
+   Binds `0.0.0.0` by default so phones on the LAN can open `http://<machine>:<port>/`;
+   pass `--host 127.0.0.1` to restrict.
+2. Feed reality: `create` new cards, `patch` bodies/attributes as state evolves, `event`
+   for timeline signals (level 1 only for things the human must see), `move` for real
+   state transitions, `archive` when work is dead or landed, `say` to talk.
+3. Keep `bridge-axi poll` running as a tracked background task. It BLOCKS until human
+   input, prints JSON lines, and exits; handle each line, reply with
+   `bridge-axi say <target> --text-file <f>`, re-run poll. Lines carry `kind`:
+   - `message` — human message; `target` is `chat` or `card:<id>`.
+   - `card-created` — the human made a card in the UI (`target` names it): treat it as an
+     intake request, respond in its thread.
+   - `card-moved` — the human moved a card (`from`/`column` fields): a handoff or a
+     handback, act accordingly.
+4. Always answer feedback with `say` to the same target — the UI shows "agent is working…"
+   until the reply lands.
 
-Feedback also appears in the UI thread immediately (author `user`), so replies via `say` land in
-the same visible conversation.
+Rules:
+- Message/body text goes via `--text-file`/`--body-file` or stdin — never interpolated
+  into a shell command.
+- `poll` persists its cursor in `~/.bridge/boards/<name>.cursor`; nothing is lost between
+  polls.
+- Cards are for units of work, not for questions — ask questions in a thread (`say`) plus
+  a level-1 `question` event on the card the question belongs to.
 
-## Voice filter
+## Notifications and read state
 
-`~/.bridge/config.json` `{"voices": ["Luciana", "Google US English"]}` — case-insensitive substring
-matches trim the UI's voice dropdown; absent/empty = full list. Served at `GET /api/config`, read live.
-When the user names preferred voices in chat, run `bridge-axi config voices "Luciana,Google US English"`
-(`""` clears; `config show` prints the file) — the dropdown shrinks on next page load.
+Level-1 events light the bell with signal emojis; the human can mark items read, mark all,
+and expand the "· N events ·" dividers to see everything. Read state lives in the board
+JSON per user (default user `user`), so it survives reloads and devices. Thread unread
+badges (chat bubbles, tiles) use per-thread read markers, also server-side.
+
+## Voice
+
+`~/.bridge/config.json` `{"voices": ["Some Voice", "Another"]}` — case-insensitive
+substring filter for the UI's TTS voice dropdown; absent/empty = full list. Manage with
+`bridge-axi config voices "a,b"` / `config show`. The 🔊 toggle persists per browser and
+speaks new agent messages (emojis stripped).
+
+## Migration
+
+`node migrate-v1.js <v1-board.json> [out.json]` converts a v1 board doc (columns/cards
+with summary/detail_md/badges/links, threads, chat, labels) to the v2 model. It never
+writes in place and never touches a server: stop the server, convert, move the file into
+`~/.bridge/boards/` yourself.
+
+See `README.md` for the HTTP API reference.
