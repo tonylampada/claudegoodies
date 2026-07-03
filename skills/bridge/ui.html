@@ -109,6 +109,8 @@
   #drawer .d-close { background: none; border: none; color: var(--dim); font-size: 18px; cursor: pointer; }
   #drawer .d-body { flex: 1; overflow-y: auto; padding: 14px 16px; }
   #drawer .d-detail { border-bottom: 1px dashed var(--line); padding-bottom: 12px; margin-bottom: 12px; }
+  #drawer .d-detail .badges { margin: 8px 0 4px; }
+  #drawer .d-detail .d-none { color: var(--faint); }
 
   /* markdown */
   .md h1, .md h2, .md h3 { margin: 10px 0 5px; line-height: 1.25; }
@@ -436,11 +438,17 @@ function ownerHeadHtml(owner) {
     (owner ? esc(owner) : 'unassigned') + '</div>';
 }
 
-function cardHtml(c, ownerAccent) {
-  const badges = (c.badges || []).map((b) =>
+function badgesHtml(c) {
+  return (c.badges || []).map((b) =>
     '<span class="badge ' + (['success','warn','danger','info','neutral'].includes(b.tone) ? b.tone : 'neutral') + '">' + esc(b.text) + '</span>').join('');
-  const links = (c.links || []).map((l) =>
+}
+function linksHtml(c) {
+  return (c.links || []).map((l) =>
     '<a href="' + esc(l.url) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">' + esc(l.text) + '</a>').join('');
+}
+function cardHtml(c, ownerAccent) {
+  const badges = badgesHtml(c);
+  const links = linksHtml(c);
   const tn = (c.thread || []).length;
   const accent = ownerAccent && c.owner ? ' style="border-left:3px solid ' + ownerColor(c.owner) + '"' : '';
   return '<div class="card' + (c.id === openCardId ? ' open' : '') + '" data-id="' + esc(c.id) + '"' + accent + '>' +
@@ -525,7 +533,18 @@ function renderDrawer(card) {
   } else {
     ownerEl.style.display = 'none';
   }
-  document.getElementById('d-detail').innerHTML = md(card.detail_md || '');
+  const detailEl = document.getElementById('d-detail');
+  if (card.detail_md) {
+    detailEl.innerHTML = md(card.detail_md);
+  } else {
+    // no detail_md: degrade gracefully to the card's own summary/badges/links
+    const badges = badgesHtml(card), links = linksHtml(card);
+    detailEl.innerHTML =
+      (card.summary ? '<p>' + esc(card.summary) + '</p>' : '') +
+      (badges ? '<div class="badges">' + badges + '</div>' : '') +
+      (links ? '<div class="links">' + links + '</div>' : '') ||
+      '<p class="d-none">no detail for this card</p>';
+  }
   renderThread(document.getElementById('d-thread'), card.thread || [], 'card:' + card.id);
 }
 function openDrawer(id) { openCardId = id; render(); }
