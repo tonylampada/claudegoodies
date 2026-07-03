@@ -46,6 +46,15 @@ and emits `{upsert,remove}` card upserts — the board's mechanical skeleton, no
   seeded with the generated text. Stdout mode (no `--apply`) is raw: full cards, no board diff.
 - `--no-secondmates` skips recursion; `--owner` relabels the home. Read-only: it never writes to
   the firstmate home.
+- **Follow-up tasks on an existing card** (e.g. a fix task amending a PR another card already
+  represents): alias it in the owner home's `data/board-aliases` — plain `<task-id> <card-id>`
+  lines (`#` comments ok; task id is home-local, card id is the final board id, owner-prefixed
+  for secondmates). Add the line BEFORE spawning the follow-up so no duplicate card is ever
+  created; if one already exists, remove it once via `bridge-axi card - <<< '{"remove":["<id>"]}'`.
+  The aliased task emits no card; while it is in flight the target card is forced to `inflight`
+  (its own title/summary/badges stay per sticky curation), and when it finishes the target falls
+  back to its own record. Unknown targets are advisory-only — never invented (board-only targets
+  are verified under `--apply`).
 
 ## Cadence
 

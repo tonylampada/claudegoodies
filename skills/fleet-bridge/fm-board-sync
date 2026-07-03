@@ -136,6 +136,27 @@ function parseMetas(stateDir) {
   return metas;
 }
 
+// ---------- board aliases ----------
+// Optional <home>/data/board-aliases: "<task-id> <card-id>" lines (# comments, blanks ok).
+// An aliased task (e.g. a follow-up amending an existing PR) emits NO card of its own;
+// while it is in flight its liveness promotes the TARGET card's column to inflight for
+// this sync. Task ids are home-local; the target is the FINAL board card id (bare or
+// owner-prefixed). When the aliased task disappears, the target falls back to its own
+// record's column — no special handling.
+function parseAliases(file) {
+  const map = new Map();
+  const src = readFileSafe(file);
+  if (src == null) return map;
+  for (const raw of src.split('\n')) {
+    const line = raw.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const m = /^(\S+)\s+(\S+)$/.exec(line);
+    if (m) map.set(m[1], m[2]);
+    else warn('bad alias line in ' + file + ': ' + raw.trim());
+  }
+  return map;
+}
+
 // ---------- card assembly for one home ----------
 const COLUMN_RANK = { inflight: 0, waiting: 1, done: 2 };
 
@@ -199,6 +220,18 @@ function cardsForHome(home, owner, windows) {
     c.verb = it.verb;
   }
 
+  // Alias resolution: aliased tasks emit no card; a live (inflight) aliased task
+  // promotes its target card to inflight. Resolution happens in main(), because the
+  // target may live in another owner's output or only on the board.
+  const promos = [];
+  const aliases = parseAliases(path.join(home, 'data', 'board-aliases'));
+  for (const [taskId, target] of aliases) {
+    const c = cards.get(taskId);
+    if (!c || !c.column) continue; // task gone -> alias dormant, target falls back naturally
+    cards.delete(taskId);
+    if (c.column === 'inflight') promos.push({ target, task: taskId, owner });
+  }
+
   // Materialize board cards.
   const out = [];
   for (const [id, c] of cards) {
@@ -233,7 +266,7 @@ function cardsForHome(home, owner, windows) {
     out.push(card);
   }
   out.sort((a, b) => (COLUMN_RANK[a.column] - COLUMN_RANK[b.column]) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return out;
+  return { cards: out, promos };
 }
 
 // ---------- secondmate registry ----------
@@ -256,20 +289,38 @@ function main() {
   const windows = liveWindows();
   if (windows == null) warn('tmux unavailable; window liveness unknown (no waiting demotion)');
 
-  let upsert = cardsForHome(home, opts.owner, windows);
+  const gen = cardsForHome(home, opts.owner, windows);
+  let upsert = gen.cards;
+  let promos = gen.promos;
   const owners = new Set([opts.owner]);
 
   if (opts.secondmates) {
     for (const sm of parseSecondmates(path.join(home, 'data', 'secondmates.md'))) {
       if (!fs.existsSync(sm.home)) { warn('secondmate home missing: ' + sm.home + ' (skipped)'); continue; }
       owners.add(sm.id);
-      upsert = upsert.concat(cardsForHome(sm.home, sm.id, windows));
+      const g = cardsForHome(sm.home, sm.id, windows);
+      upsert = upsert.concat(g.cards);
+      promos = promos.concat(g.promos);
     }
+  }
+
+  // Alias promotions whose target is in the generated output: force it inflight.
+  // Targets not generated (curated/standing cards) can only be verified against the
+  // board, so they are deferred to the --apply flow; nothing is ever invented.
+  const pendingPromos = [];
+  for (const p of promos) {
+    const t = upsert.find((c) => c.id === p.target);
+    if (t) t.column = 'inflight';
+    else pendingPromos.push(p);
   }
 
   const doc = { upsert, remove: [] };
 
   if (!opts.apply) {
+    for (const p of pendingPromos) {
+      warn('advisory: alias target "' + p.target + '" for task ' + p.task + ' (owner ' + p.owner +
+        ') not in generated output — board not checked without --apply; nothing emitted');
+    }
     process.stdout.write(JSON.stringify(doc, null, 2) + '\n');
     return;
   }
@@ -285,6 +336,14 @@ function main() {
     return request('GET', base + '/api/board');
   }).then((board) => {
     const boardCards = (board && Array.isArray(board.cards) ? board.cards : []);
+    // Deferred alias promotions: target exists on the board -> minimal column patch
+    // (the server merge keeps every other field); unknown target -> advisory only.
+    const boardIds = new Set(boardCards.filter((c) => c && c.id).map((c) => c.id));
+    for (const p of pendingPromos) {
+      if (boardIds.has(p.target)) upsert.push({ id: p.target, column: 'inflight' });
+      else warn('advisory: alias target "' + p.target + '" for task ' + p.task + ' (owner ' + p.owner +
+        ') not on board or in generated output; nothing emitted');
+    }
     const emitted = new Set(upsert.map((c) => c.id));
     const stale = boardCards
       .filter((c) => c && owners.has(c.owner) && !emitted.has(c.id) && taskShaped(c.id))
