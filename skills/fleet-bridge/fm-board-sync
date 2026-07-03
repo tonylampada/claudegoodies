@@ -8,11 +8,14 @@
 //   fm-board-sync [--home <path>] [--owner <name>] [--no-secondmates] [--done <n>]
 //                 [--apply] [--port <p>] [--board <name>]
 //
-// Without --apply: prints the JSON to stdout. With --apply: PATCHes the local bridge
-// server (defaults match bridge-axi: port 4777, board "default") and prints the server
-// reply; also prints an advisory stderr line listing task-shaped board cards owned by
-// an emitted owner that were NOT regenerated (possible stale cards). remove is never
-// computed automatically — standing/hand-made cards survive.
+// Without --apply: prints the raw generated JSON to stdout (full cards, no board diff).
+// With --apply: PATCHes the local bridge server (defaults match bridge-axi: port 4777,
+// board "default") and prints the server reply; also prints an advisory stderr line
+// listing task-shaped board cards owned by an emitted owner that were NOT regenerated
+// (possible stale cards). remove is never computed automatically — standing/hand-made
+// cards survive. Sticky curation (--apply only): for card ids already on the board,
+// title and summary are stripped from the upsert so human retouches persist; brand-new
+// cards keep the generated title/summary as a seed.
 'use strict';
 
 const fs = require('fs');
@@ -157,6 +160,8 @@ function cardsForHome(home, owner, windows) {
 
   // Live meta files (union with backlog; meta-only tasks still get an inflight card).
   for (const [id, m] of metas) {
+    // A secondmate's own work is represented via recursion into its home; no self-card.
+    if (m.kind === 'secondmate') { cards.delete(id); continue; }
     const c = draft(id);
     if (!c.column) c.column = 'inflight';
     if (m.kind) c.kind = m.kind;
@@ -214,7 +219,8 @@ function cardsForHome(home, owner, windows) {
         const n = prNumber(c.doneUrl);
         links.push({ text: n ? 'PR #' + n : 'link', url: c.doneUrl });
       }
-      badges.push({ text: c.verb === 'reported' ? 'reported' : 'merged', tone: 'success' });
+      const verb = c.verb || 'done';
+      badges.push({ text: verb, tone: (verb === 'merged' || verb === 'reported') ? 'success' : 'info' });
     } else {
       for (const pr of c.prs) {
         const n = prNumber(pr);
@@ -278,11 +284,19 @@ function main() {
     }
     return request('GET', base + '/api/board');
   }).then((board) => {
+    const boardCards = (board && Array.isArray(board.cards) ? board.cards : []);
     const emitted = new Set(upsert.map((c) => c.id));
-    const stale = (board && Array.isArray(board.cards) ? board.cards : [])
+    const stale = boardCards
       .filter((c) => c && owners.has(c.owner) && !emitted.has(c.id) && taskShaped(c.id))
       .map((c) => c.id);
     if (stale.length) warn('advisory: board cards not regenerated (stale?): ' + stale.join(', '));
+    // Sticky curation: cards already on the board keep their (possibly hand-retouched)
+    // title/summary — strip both from the upsert so the server merge preserves them.
+    // Brand-new cards keep the generated title/summary as a seed.
+    const existing = new Set(boardCards.filter((c) => c && c.id).map((c) => c.id));
+    for (const c of upsert) {
+      if (existing.has(c.id)) { delete c.title; delete c.summary; }
+    }
     return request('PATCH', base + '/api/cards', doc);
   }).then((reply) => {
     process.stdout.write(JSON.stringify(reply) + '\n');

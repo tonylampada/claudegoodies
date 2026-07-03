@@ -41,6 +41,9 @@ and emits `{upsert,remove}` card upserts — the board's mechanical skeleton, no
 - Hand-enrichment survives: the generator never emits `detail_md` and never computes `remove`,
   so hand-written detail, threads, extra cards, and standing cards are preserved by the server's
   per-card merge. It only prints an advisory stderr line for task-shaped cards it didn't regenerate.
+- Sticky curation (`--apply` only): cards already on the board get `title`/`summary` stripped from
+  the upsert, so a human retouch persists across syncs — retouch once, it sticks; new cards are
+  seeded with the generated text. Stdout mode (no `--apply`) is raw: full cards, no board diff.
 - `--no-secondmates` skips recursion; `--owner` relabels the home. Read-only: it never writes to
   the firstmate home.
 
