@@ -242,6 +242,27 @@ const server = http.createServer(async (req, res) => {
     }
     if (route === 'PATCH /api/cards') {
       const body = JSON.parse(await readBody(req));
+      // Optional top-level columns: replaces board.columns only (cards/threads/chat/labels
+      // untouched). Present = validate+set; absent = untouched. Setting identical columns is
+      // a guarded no-op so callers can push the same frame every sync without churn.
+      let columnsChanged = false;
+      if (body.columns !== undefined) {
+        if (!Array.isArray(body.columns) ||
+            !body.columns.every((c) => c && typeof c.id === 'string' && typeof c.title === 'string')) {
+          return sendJson(res, 400, { error: 'columns must be [{id:string,title:string}]' });
+        }
+        const next = body.columns.map((c) => ({ id: c.id, title: c.title }));
+        if (JSON.stringify(next) !== JSON.stringify((board.columns || []).map((c) => ({ id: c.id, title: c.title })))) {
+          board.columns = next;
+          columnsChanged = true;
+        }
+      }
+      const hasCardOps = (body.update && body.update.length) ||
+        (body.upsert && body.upsert.length) || (body.remove && body.remove.length);
+      // columns-only PATCH with identical columns: full no-op, nothing saved or broadcast.
+      if (!hasCardOps && body.columns !== undefined && !columnsChanged) {
+        return sendJson(res, 200, { ok: true, columns: board.columns.length, unchanged: true });
+      }
       // update: merge onto EXISTING cards only (never creates). Used by the UI for
       // user-owned fields like labels, so a typo'd id can't create a phantom card.
       for (const card of body.update || []) {

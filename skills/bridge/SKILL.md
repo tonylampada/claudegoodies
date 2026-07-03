@@ -69,6 +69,13 @@ Columns render in doc order; cards render under their `column` id. `card` upsert
 existing card and preserve its thread unless you send a new one. `updated` timestamps are set by
 the server when omitted.
 
+`PATCH /api/cards` accepts an optional top-level `columns: [{id, title}]` that replaces
+`board.columns` only — cards, threads, chat, and labels are untouched. Absent = columns left
+alone; present = validated (array of `{id:string, title:string}`) and set. Setting columns
+identical to the current frame is a guarded no-op (nothing saved or broadcast, no `updated`
+churn), so a caller can push the same column frame on every sync idempotently. This is how a
+driver owns the column skeleton without a full-board `POST` (which would wipe threads/chat/cards).
+
 `badges` vs `labels`: badges are agent-owned — replace them freely on sync/upsert. `labels` is
 USER-owned (edited in the card drawer, persisted in board state): never set or rewrite it. Upserts
 and full `sync` docs that omit the field leave existing labels intact (the server carries them
