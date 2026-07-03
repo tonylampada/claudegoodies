@@ -38,6 +38,11 @@
     font: inherit; font-size: 13.5px; padding: 7px 12px; outline: none;
   }
   #filter:focus { border-color: var(--accent2); }
+  #filter-age {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 7px; color: var(--dim);
+    font: inherit; font-size: 11.5px; padding: 6px 4px; max-width: 110px; cursor: pointer; outline: none; flex: none;
+  }
+  #filter-age:hover, #filter-age:focus { border-color: var(--accent2); }
   #filter-n { color: var(--dim); font-size: 11px; white-space: nowrap; }
   #filter-chips { display: flex; gap: 5px; align-items: center; flex: none; max-width: 40%; overflow: hidden; }
   .fchip {
@@ -258,6 +263,13 @@
   <span id="filter-wrap">
     <span id="filter-chips"></span>
     <input id="filter" placeholder="type to filter ( / )" autocomplete="off">
+    <select id="filter-age" title="only cards updated recently">
+      <option value="">any time</option>
+      <option value="3600">last hour</option>
+      <option value="today">today</option>
+      <option value="259200">last 3 days</option>
+      <option value="604800">last week</option>
+    </select>
     <span id="filter-n"></span>
     <button id="filter-clear" title="clear filter">✕</button>
   </span>
@@ -626,7 +638,9 @@ function render() {
   } else {
     const multiOwner = boardMultiOwner();
     boardEl.innerHTML = cols.map((col) => {
-      const cards = (doc.cards || []).filter((c) => c.column === col.id);
+      // most-recently-updated first; owner grouping stays the outer order (groups
+      // form in recency order too, and cards sort within each group)
+      const cards = (doc.cards || []).filter((c) => c.column === col.id).sort(byRecency);
       let inner;
       if (multiOwner && new Set(cards.map((c) => c.owner || '')).size > 1) {
         const order = [], groups = {};
@@ -928,6 +942,16 @@ function renderChips() {
     wrap.appendChild(chip);
   }
 }
+function byRecency(a, b) {
+  return (new Date(b.updated || 0).getTime() || 0) - (new Date(a.updated || 0).getTime() || 0);
+}
+const filterAge = document.getElementById('filter-age');
+function ageCutoff() { // 0 = no recency filter
+  const v = filterAge.value;
+  if (!v) return 0;
+  if (v === 'today') { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+  return Date.now() - parseInt(v, 10) * 1000;
+}
 function cardHaystack(c) {
   const col = ((doc && doc.columns) || []).find((k) => k.id === c.column);
   return [c.title, c.id, c.summary, c.owner,
@@ -939,13 +963,15 @@ function cardHaystack(c) {
 }
 function applyFilter() {
   const q = filterInput.value.trim().toLowerCase();
-  const active = q || selFilters.length;
+  const cutoff = ageCutoff();
+  const active = q || selFilters.length || cutoff;
   const boardEl = document.getElementById('board');
   let shown = 0, total = 0;
   boardEl.querySelectorAll('.card').forEach((el) => {
     total++;
     const c = ((doc && doc.cards) || []).find((x) => x.id === el.dataset.id);
-    const ok = !active || (c && (!q || cardHaystack(c).includes(q)) && matchesSel(c));
+    const recent = !cutoff || (c && c.updated && new Date(c.updated).getTime() >= cutoff);
+    const ok = !active || (c && (!q || cardHaystack(c).includes(q)) && matchesSel(c) && recent);
     el.style.display = ok ? '' : 'none';
     if (ok) shown++;
   });
@@ -965,10 +991,12 @@ function applyFilter() {
 }
 function clearFilter() {
   filterInput.value = '';
+  filterAge.value = '';
   if (selFilters.length) { selFilters = []; renderChips(); render(); } // render() ends in applyFilter()
   else applyFilter();
 }
 filterInput.oninput = applyFilter;
+filterAge.onchange = applyFilter;
 filterInput.onkeydown = function (e) {
   if (e.key === 'Escape') { clearFilter(); filterInput.blur(); e.stopPropagation(); }
 };
@@ -983,7 +1011,7 @@ document.addEventListener('keydown', (e) => {
     if (spEl.classList.contains('open')) { spEl.classList.remove('open'); gearBtn.classList.remove('on'); }
     else if (pickerCardId) closeLabelPicker();
     else if (openCardId) closeDrawer();
-    else if (filterInput.value || selFilters.length) clearFilter();
+    else if (filterInput.value || selFilters.length || filterAge.value) clearFilter();
   }
 });
 

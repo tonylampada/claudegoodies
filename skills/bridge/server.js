@@ -171,6 +171,38 @@ function threadFor(target) {
   }
   return null;
 }
+function touchCard(target) { // thread activity refreshes the card's recency stamp
+  const m = /^card:(.+)$/.exec(target || '');
+  const card = m && board.cards.find((c) => c.id === m[1]);
+  if (card) card.updated = now();
+}
+// Change-aware recency: deep-compare cards ignoring volatile fields (updated, thread),
+// key-order-insensitive, so identical mirror syncs never bump "updated".
+function sortKeys(v) {
+  if (Array.isArray(v)) return v.map(sortKeys);
+  if (v && typeof v === 'object') {
+    const o = {};
+    for (const k of Object.keys(v).sort()) o[k] = sortKeys(v[k]);
+    return o;
+  }
+  return v;
+}
+function sameCardContent(a, b) {
+  const strip = (c) => {
+    const o = Object.assign({}, c);
+    delete o.updated; delete o.thread;
+    return o;
+  };
+  return JSON.stringify(sortKeys(strip(a))) === JSON.stringify(sortKeys(strip(b)));
+}
+// Merge a patch onto an existing card; "updated" = last REAL change: an explicit stamp
+// wins, unchanged content keeps the old stamp, changed content stamps now().
+function mergeCard(prevCard, patch) {
+  const merged = Object.assign({}, prevCard, patch);
+  merged.updated = patch.updated ||
+    (sameCardContent(merged, prevCard) ? prevCard.updated || now() : now());
+  return merged;
+}
 
 // ---------- server ----------
 const server = http.createServer(async (req, res) => {
@@ -194,9 +226,13 @@ const server = http.createServer(async (req, res) => {
       // labels are user-owned: a full sync whose cards omit the field inherits the old labels,
       // and a doc without a labels registry inherits the old registry
       for (const c of board.cards) {
-        if (c && c.id && c.labels === undefined) {
-          const old = prev.cards.find((o) => o.id === c.id);
-          if (old && old.labels) c.labels = old.labels;
+        if (!c || !c.id) continue;
+        const old = prev.cards.find((o) => o.id === c.id);
+        if (c.labels === undefined && old && old.labels) c.labels = old.labels;
+        // keep recency meaningful: when the doc omits updated, an unchanged card keeps
+        // its old stamp (mirror syncs are timestamp-neutral); changed or new stamps now()
+        if (!c.updated) {
+          c.updated = old ? (sameCardContent(c, old) ? old.updated || now() : now()) : now();
         }
       }
       if (doc.labels === undefined) board.labels = Array.isArray(prev.labels) ? prev.labels : [];
@@ -213,7 +249,7 @@ const server = http.createServer(async (req, res) => {
         const i = board.cards.findIndex((c) => c.id === card.id);
         if (i < 0) return sendJson(res, 404, { error: 'unknown card: ' + card.id });
         if (!card.thread) card.thread = board.cards[i].thread || [];
-        board.cards[i] = Object.assign({}, board.cards[i], card, { updated: card.updated || now() });
+        board.cards[i] = mergeCard(board.cards[i], card);
       }
       for (const card of body.upsert || []) {
         if (!card.id) return sendJson(res, 400, { error: 'card without id' });
@@ -221,7 +257,7 @@ const server = http.createServer(async (req, res) => {
         if (i >= 0) {
           // merge: keep existing thread unless the upsert brings one
           if (!card.thread) card.thread = board.cards[i].thread || [];
-          board.cards[i] = Object.assign({}, board.cards[i], card, { updated: card.updated || now() });
+          board.cards[i] = mergeCard(board.cards[i], card);
         } else {
           card.thread = card.thread || [];
           card.updated = card.updated || now();
@@ -279,6 +315,7 @@ const server = http.createServer(async (req, res) => {
       const thread = threadFor(body.target);
       if (!thread) return sendJson(res, 404, { error: 'unknown target: ' + body.target });
       thread.push({ author: body.author || 'agent', text: String(body.text_md || body.text || ''), ts: now() });
+      touchCard(body.target);
       saveBoard(); broadcast(); setAwaiting(body.target, false);
       return sendJson(res, 200, { ok: true });
     }
@@ -287,6 +324,7 @@ const server = http.createServer(async (req, res) => {
       const thread = threadFor(body.target);
       if (!thread) return sendJson(res, 404, { error: 'unknown target: ' + body.target });
       thread.push({ author: 'user', text: String(body.text || ''), ts: now() });
+      touchCard(body.target);
       const ev = pushFeedback(body.target, String(body.text || ''));
       saveBoard(); broadcast(); setAwaiting(body.target, true);
       return sendJson(res, 200, { ok: true, seq: ev.seq });
