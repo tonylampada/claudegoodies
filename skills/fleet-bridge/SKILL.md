@@ -27,6 +27,23 @@ Firstmate-specific usage of the generic `bridge` skill. The bridge is agent-agno
 - Captain-facing language rules apply (outcomes, not machinery; full PR URLs in links).
 - Standing cards: `merge-queue` (main fleet PR queue), `sm-merge-queue` (secondmate PR queue), `bridge-v1` (the experiment's own feedback card).
 
+## Deterministic sync
+
+`fm-board-sync` (this skill dir) is a zero-dep node generator that reads a firstmate home's
+on-disk state (`data/backlog.md`, `state/*.meta`, `data/secondmates.md` + each secondmate home)
+and emits `{upsert,remove}` card upserts — the board's mechanical skeleton, no agent judgment.
+
+- Run on every wake: `fm-board-sync --home <fm-home> --apply --board fleet` (`--port 4777` default).
+  Without `--apply` it prints the JSON to stdout for inspection.
+- Mapping: In flight backlog + live meta → `inflight`; "PR ready / awaiting merge" sections and
+  pr=-recorded tasks whose window is gone → `waiting`; recent Done (`--done`, default 5) → `done`.
+  Card ids are `<owner>:<task-id>` per secondmate, bare task id for owner `firstmate` (back-compat).
+- Hand-enrichment survives: the generator never emits `detail_md` and never computes `remove`,
+  so hand-written detail, threads, extra cards, and standing cards are preserved by the server's
+  per-card merge. It only prints an advisory stderr line for task-shaped cards it didn't regenerate.
+- `--no-secondmates` skips recursion; `--owner` relabels the home. Read-only: it never writes to
+  the firstmate home.
+
 ## Cadence
 
 - **Sync on every wake** that changes fleet state (spawn, done, PR opened/green, teardown, failure): `bridge-axi card -` with an `{upsert:[...]}` — NEVER full `sync` unless you round-trip the current doc (GET `/api/board` → modify → POST), because full sync replaces threads/chat.

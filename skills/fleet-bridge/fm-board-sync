@@ -1,0 +1,319 @@
+#!/usr/bin/env node
+// fm-board-sync — deterministic bridge-board generator from a firstmate home's on-disk state.
+// Reads data/backlog.md, state/*.meta, data/secondmates.md (read-only) and emits
+// {"upsert":[...],"remove":[]} card upserts for PATCH /api/cards on the bridge server.
+// Node built-ins only, zero deps. Never writes to the firstmate home.
+//
+// Usage:
+//   fm-board-sync [--home <path>] [--owner <name>] [--no-secondmates] [--done <n>]
+//                 [--apply] [--port <p>] [--board <name>]
+//
+// Without --apply: prints the JSON to stdout. With --apply: PATCHes the local bridge
+// server (defaults match bridge-axi: port 4777, board "default") and prints the server
+// reply; also prints an advisory stderr line listing task-shaped board cards owned by
+// an emitted owner that were NOT regenerated (possible stale cards). remove is never
+// computed automatically — standing/hand-made cards survive.
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+const { execFileSync } = require('child_process');
+
+function warn(msg) { process.stderr.write('fm-board-sync: ' + msg + '\n'); }
+
+// ---------- args ----------
+const argv = process.argv.slice(2);
+const opts = {
+  home: process.env.FM_HOME || process.cwd(),
+  owner: 'firstmate',
+  secondmates: true,
+  done: 5,
+  apply: false,
+  port: 4777,
+  board: 'default',
+};
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i];
+  if (a === '--home') opts.home = argv[++i];
+  else if (a === '--owner') opts.owner = argv[++i];
+  else if (a === '--include-secondmates') opts.secondmates = true;
+  else if (a === '--no-secondmates') opts.secondmates = false;
+  else if (a === '--done') opts.done = parseInt(argv[++i], 10) || 0;
+  else if (a === '--apply') opts.apply = true;
+  else if (a === '--port') opts.port = parseInt(argv[++i], 10);
+  else if (a === '--board') opts.board = argv[++i];
+  else { warn('unknown option: ' + a); process.exit(2); }
+}
+
+// ---------- helpers ----------
+function readFileSafe(file) {
+  try { return fs.readFileSync(file, 'utf8'); } catch (e) { return null; }
+}
+
+// Live tmux windows ("session:window_name"); null when tmux is unavailable
+// (then window liveness is unknown and nothing is demoted on that basis).
+function liveWindows() {
+  try {
+    const out = execFileSync('tmux', ['list-windows', '-a', '-F', '#{session_name}:#{window_name}'],
+      { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' });
+    return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean));
+  } catch (e) { return null; }
+}
+
+function prNumber(url) {
+  const m = /\/pull\/(\d+)/.exec(url);
+  return m ? m[1] : null;
+}
+
+// Trim one trailing "(...)" parenthetical (the "(repo: x, since d)" / "(merged d)" tail).
+function trimTrailingParen(text) {
+  return text.replace(/\s*\([^()]*\)\s*$/, '').trim();
+}
+
+// ---------- backlog parsing ----------
+// Returns {inflight:[item], waiting:[item], done:[item]}; item = {id, text, repo, url, verb}.
+// Section switching happens on "## " headings only; deeper "### " headings are free-form
+// notes inside a section and never switch it. Unparseable lines are skipped silently.
+function parseBacklog(file) {
+  const out = { inflight: [], waiting: [], done: [] };
+  const src = readFileSafe(file);
+  if (src == null) { warn('no backlog at ' + file + ' (skipped)'); return out; }
+  let section = null;
+  for (const raw of src.split('\n')) {
+    const h2 = /^##\s+(.*)$/.exec(raw);
+    if (h2) {
+      const t = h2[1].replace(/^[^A-Za-z0-9]+/, ''); // strip emoji/symbol prefix
+      if (/^in flight/i.test(t)) section = 'inflight';
+      else if (/PR ready|awaiting.*merge/i.test(t)) section = 'waiting';
+      else if (/^done\b/i.test(t)) section = 'done';
+      else section = null; // Queued and free-form h2 sections are ignored in v1
+      continue;
+    }
+    if (/^###/.test(raw)) continue; // free-form sub-heading, keep current section
+    if (!section) continue;
+    const item = /^\s*- \[( |x)\]\s+(\S+)\s+-\s+(.*\S)\s*$/.exec(raw);
+    if (!item) continue;
+    const id = item[2];
+    let text = item[3];
+    const rec = { id, text, repo: null, url: null, verb: null };
+    const repoM = /\(repo:\s*([^,;)]+)/.exec(text);
+    if (repoM) rec.repo = repoM[1].trim();
+    if (section === 'done') {
+      // "- [x] <id> - <one line> - <url-or-path> (<verb> <date>)"
+      const tail = /^(.*\S)\s+-\s+(\S+)\s+\((\w+)[^)]*\)\s*$/.exec(text);
+      if (tail) { rec.text = tail[1]; rec.url = tail[2]; rec.verb = tail[3].toLowerCase(); }
+    }
+    out[section].push(rec);
+  }
+  return out;
+}
+
+// ---------- meta parsing ----------
+// Returns map id -> {kind, mode, window, project, prs:[url]}.
+function parseMetas(stateDir) {
+  const metas = new Map();
+  let names;
+  try { names = fs.readdirSync(stateDir).filter((n) => n.endsWith('.meta')).sort(); }
+  catch (e) { warn('no state dir at ' + stateDir + ' (skipped)'); return metas; }
+  for (const name of names) {
+    const id = name.slice(0, -'.meta'.length);
+    const src = readFileSafe(path.join(stateDir, name));
+    if (src == null) continue;
+    const m = { kind: null, mode: null, window: null, project: null, projects: null, prs: [] };
+    for (const line of src.split('\n')) {
+      const kv = /^(\w+)=(.*)$/.exec(line.trim());
+      if (!kv) continue;
+      const [, k, v] = kv;
+      if (k === 'pr') { if (v && !m.prs.includes(v)) m.prs.push(v); }
+      else if (k in m) m[k] = v;
+    }
+    metas.set(id, m);
+  }
+  return metas;
+}
+
+// ---------- card assembly for one home ----------
+const COLUMN_RANK = { inflight: 0, waiting: 1, done: 2 };
+
+function cardsForHome(home, owner, windows) {
+  const backlog = parseBacklog(path.join(home, 'data', 'backlog.md'));
+  const metas = parseMetas(path.join(home, 'state'));
+  const cards = new Map(); // task id -> card draft {column, title, summary, repo, kind, prs[], doneUrl, verb}
+
+  function draft(id) {
+    if (!cards.has(id)) cards.set(id, { column: null, title: id, summary: null, repo: null, kind: null, prs: [], doneUrl: null, verb: null });
+    return cards.get(id);
+  }
+
+  // In-flight backlog items.
+  for (const it of backlog.inflight) {
+    const c = draft(it.id);
+    c.column = 'inflight';
+    c.title = trimTrailingParen(it.text) || it.id;
+    c.summary = it.text;
+    if (it.repo) c.repo = it.repo;
+  }
+
+  // Live meta files (union with backlog; meta-only tasks still get an inflight card).
+  for (const [id, m] of metas) {
+    const c = draft(id);
+    if (!c.column) c.column = 'inflight';
+    if (m.kind) c.kind = m.kind;
+    // For a secondmate the project= points at its own home; badge its projects= list instead.
+    if (!c.repo) c.repo = m.kind === 'secondmate' ? m.projects : (m.project && path.basename(m.project));
+    for (const pr of m.prs) if (!c.prs.includes(pr)) c.prs.push(pr);
+    // pr recorded but window gone -> awaiting merge, not actively worked.
+    if (m.prs.length && windows && m.window && /^[^:]+:.+$/.test(m.window) &&
+        !windows.has(m.window) && c.column === 'inflight') {
+      c.column = 'waiting';
+    }
+  }
+
+  // Waiting-section backlog items override inflight placement.
+  for (const it of backlog.waiting) {
+    const c = draft(it.id);
+    c.column = 'waiting';
+    c.title = trimTrailingParen(it.text) || it.id;
+    c.summary = it.text;
+    if (it.repo) c.repo = it.repo;
+    for (const m of it.text.matchAll(/https?:\/\/\S+/g)) {
+      const url = m[0].replace(/[),.;]+$/, '');
+      if (!c.prs.includes(url)) c.prs.push(url);
+    }
+  }
+
+  // Most-recent Done entries (the section lists newest first).
+  for (const it of backlog.done.slice(0, opts.done)) {
+    const c = draft(it.id);
+    c.column = 'done';
+    c.title = trimTrailingParen(it.text) || it.id;
+    c.summary = it.text;
+    if (it.repo) c.repo = it.repo;
+    c.doneUrl = it.url;
+    c.verb = it.verb;
+  }
+
+  // Materialize board cards.
+  const out = [];
+  for (const [id, c] of cards) {
+    if (!c.column) continue;
+    const card = {
+      id: owner === 'firstmate' ? id : owner + ':' + id,
+      column: c.column,
+      title: c.title,
+      owner,
+    };
+    if (c.summary) card.summary = c.summary;
+    const badges = [];
+    if (c.repo) badges.push({ text: c.repo, tone: 'info' });
+    if (c.kind && c.kind !== 'ship') badges.push({ text: c.kind, tone: 'neutral' });
+    const links = [];
+    if (c.column === 'done') {
+      if (c.doneUrl && /^https?:\/\//.test(c.doneUrl)) {
+        const n = prNumber(c.doneUrl);
+        links.push({ text: n ? 'PR #' + n : 'link', url: c.doneUrl });
+      }
+      badges.push({ text: c.verb === 'reported' ? 'reported' : 'merged', tone: 'success' });
+    } else {
+      for (const pr of c.prs) {
+        const n = prNumber(pr);
+        links.push({ text: n ? 'PR #' + n : 'PR', url: pr });
+      }
+      if (c.prs.length) badges.push({ text: 'PR open', tone: 'warn' });
+    }
+    if (badges.length) card.badges = badges;
+    if (links.length) card.links = links;
+    out.push(card);
+  }
+  out.sort((a, b) => (COLUMN_RANK[a.column] - COLUMN_RANK[b.column]) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return out;
+}
+
+// ---------- secondmate registry ----------
+// "- <id> - <summary> (home: <abs-path>; scope: ...; projects: ...; added <date>)"
+function parseSecondmates(file) {
+  const out = [];
+  const src = readFileSafe(file);
+  if (src == null) return out;
+  for (const raw of src.split('\n')) {
+    const m = /^\s*-\s+(\S+)\s+-\s+.*\(home:\s*([^;)]+)/.exec(raw);
+    if (m) out.push({ id: m[1], home: m[2].trim() });
+  }
+  return out;
+}
+
+// ---------- main ----------
+function main() {
+  const home = path.resolve(opts.home);
+  if (!fs.existsSync(home)) { warn('home does not exist: ' + home); process.exit(0); }
+  const windows = liveWindows();
+  if (windows == null) warn('tmux unavailable; window liveness unknown (no waiting demotion)');
+
+  let upsert = cardsForHome(home, opts.owner, windows);
+  const owners = new Set([opts.owner]);
+
+  if (opts.secondmates) {
+    for (const sm of parseSecondmates(path.join(home, 'data', 'secondmates.md'))) {
+      if (!fs.existsSync(sm.home)) { warn('secondmate home missing: ' + sm.home + ' (skipped)'); continue; }
+      owners.add(sm.id);
+      upsert = upsert.concat(cardsForHome(sm.home, sm.id, windows));
+    }
+  }
+
+  const doc = { upsert, remove: [] };
+
+  if (!opts.apply) {
+    process.stdout.write(JSON.stringify(doc, null, 2) + '\n');
+    return;
+  }
+
+  // Like bridge-axi, the port selects the server; a server serves one board fixed at
+  // launch, so --board is verified against /api/status rather than sent per-request.
+  const base = 'http://127.0.0.1:' + opts.port;
+  request('GET', base + '/api/status').then((st) => {
+    if (st && st.board && st.board !== opts.board) {
+      warn('server on port ' + opts.port + ' serves board "' + st.board + '", not "' + opts.board + '" — not applying');
+      process.exit(1);
+    }
+    return request('GET', base + '/api/board');
+  }).then((board) => {
+    const emitted = new Set(upsert.map((c) => c.id));
+    const stale = (board && Array.isArray(board.cards) ? board.cards : [])
+      .filter((c) => c && owners.has(c.owner) && !emitted.has(c.id) && taskShaped(c.id))
+      .map((c) => c.id);
+    if (stale.length) warn('advisory: board cards not regenerated (stale?): ' + stale.join(', '));
+    return request('PATCH', base + '/api/cards', doc);
+  }).then((reply) => {
+    process.stdout.write(JSON.stringify(reply) + '\n');
+  }).catch((e) => { warn('apply failed: ' + e.message); process.exit(1); });
+}
+
+// Kebab task ids end in a short random suffix (fix-login-k3, thumb-guards-m4).
+function taskShaped(id) {
+  return typeof id === 'string' && /-[a-z]{1,2}\d{1,2}$/.test(id.replace(/^[^:]+:/, ''));
+}
+
+function request(method, url, body) {
+  return new Promise((resolve, reject) => {
+    const data = body == null ? null : JSON.stringify(body);
+    const req = http.request(url, {
+      method,
+      headers: data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {},
+      timeout: 10000,
+    }, (res) => {
+      let out = '';
+      res.on('data', (c) => (out += c));
+      res.on('end', () => {
+        if (res.statusCode >= 400) return reject(new Error('HTTP ' + res.statusCode + ': ' + out));
+        try { resolve(JSON.parse(out)); } catch (e) { resolve(out); }
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+main();
