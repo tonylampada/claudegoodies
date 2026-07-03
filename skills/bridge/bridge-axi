@@ -19,11 +19,12 @@ function die(msg) { console.error(msg); process.exit(1); }
 // ---------- args ----------
 const argv = process.argv.slice(2);
 const cmd = argv.shift();
-const opts = { port: 4777, board: 'default', textFile: null };
+const opts = { port: 4777, board: 'default', host: '0.0.0.0', textFile: null };
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--port') opts.port = parseInt(argv[++i], 10);
   else if (argv[i] === '--board') opts.board = argv[++i];
+  else if (argv[i] === '--host') opts.host = argv[++i];
   else if (argv[i] === '--text-file') opts.textFile = argv[++i];
   else positional.push(argv[i]);
 }
@@ -74,7 +75,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function cmdOpen() {
   let st = await serverUp();
   if (!st) {
-    const child = spawn(process.execPath, [SERVER_JS, '--port', String(opts.port), '--board', opts.board], {
+    const child = spawn(process.execPath, [SERVER_JS, '--port', String(opts.port), '--board', opts.board, '--host', opts.host], {
       detached: true, stdio: 'ignore',
     });
     child.unref();
@@ -144,7 +145,7 @@ async function cmdStop() {
 const commands = { open: cmdOpen, sync: cmdSync, card: cmdCard, say: cmdSay, poll: cmdPoll, status: cmdStatus, stop: cmdStop };
 if (!commands[cmd]) {
   die('usage: bridge-axi <open|sync|card|say|poll|status|stop> [--port N] [--board NAME]\n' +
-    '  open                         start server if needed, print URL\n' +
+    '  open [--host H]              start server if needed (binds 0.0.0.0 by default), print URL\n' +
     '  sync <file.json|->           replace whole board doc\n' +
     '  card <file.json|->           upsert/remove cards ({upsert,remove}, array, or one card)\n' +
     '  say <chat|card:ID> [--text-file <f>]   post agent message (stdin default)\n' +

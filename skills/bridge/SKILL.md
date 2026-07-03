@@ -21,6 +21,7 @@ it live and replies in context. Agent-agnostic: any agent with shell access can 
 ## CLI
 
 All subcommands take `--port <p>` (default 4777) and `--board <name>` (default `default`).
+The server binds `0.0.0.0` by default, so phones/tablets on the tailnet/LAN can open `http://<machine>:<port>/`; pass `--host 127.0.0.1` to `open` to restrict to local.
 
 ```bash
 bridge-axi open                      # start server if needed (idempotent), print URL

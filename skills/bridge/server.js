@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // bridge server — agent OS board. Node built-ins only, no deps.
-// Usage: node server.js --port 4777 --board default
+// Usage: node server.js --port 4777 --board default --host 0.0.0.0
 'use strict';
 
 const http = require('http');
@@ -10,12 +10,14 @@ const os = require('os');
 
 // ---------- args ----------
 function parseArgs(argv) {
-  const opts = { port: 4777, board: 'default' };
+  const opts = { port: 4777, board: 'default', host: '0.0.0.0' };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--port') opts.port = parseInt(argv[++i], 10);
     else if (argv[i] === '--board') opts.board = argv[++i];
+    else if (argv[i] === '--host') opts.host = argv[++i];
   }
   if (!Number.isInteger(opts.port) || opts.port <= 0) { console.error('bad --port'); process.exit(1); }
+  if (!opts.host) { console.error('bad --host'); process.exit(1); }
   if (!/^[\w.-]+$/.test(opts.board)) { console.error('bad --board (use [A-Za-z0-9_.-])'); process.exit(1); }
   return opts;
 }
@@ -203,6 +205,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.on('error', (e) => { console.error('server error: ' + e.message); cleanup(); process.exit(1); });
-server.listen(opts.port, '127.0.0.1', () => {
-  console.log('bridge server up: http://localhost:' + opts.port + '/ board=' + opts.board + ' pid=' + process.pid);
+server.listen(opts.port, opts.host, () => {
+  console.log('bridge server up: http://localhost:' + opts.port + '/ host=' + opts.host + ' board=' + opts.board + ' pid=' + process.pid);
 });
