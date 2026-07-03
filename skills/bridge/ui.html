@@ -48,22 +48,80 @@
   .fchip .x { font-size: 10px; opacity: .8; }
   #filter-clear { display: none; background: none; border: none; color: var(--dim); cursor: pointer; font: inherit; font-size: 12px; padding: 0 2px; }
   #filter-clear:hover { color: var(--text); }
+  #gear {
+    background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--dim);
+    padding: 3px 8px; cursor: pointer; font: inherit; font-size: 13px; align-self: center;
+  }
+  #gear:hover, #gear.on { color: var(--accent); border-color: var(--accent2); }
+
+  /* settings panel (behind the gear) */
+  #settings-panel {
+    position: fixed; top: 48px; right: 12px; z-index: 40; display: none; flex-direction: column; gap: 10px;
+    background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    width: min(320px, 92vw); box-shadow: 0 12px 30px rgba(0,0,0,.5);
+  }
+  #settings-panel.open { display: flex; }
+  .sp-row { display: flex; gap: 6px; align-items: center; }
+  .sp-title {
+    font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--faint); margin-top: 2px;
+  }
   #voice-btn {
     background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--dim);
-    padding: 3px 9px; cursor: pointer; font: inherit; font-size: 13px; align-self: center;
+    padding: 3px 9px; cursor: pointer; font: inherit; font-size: 13px;
   }
   #voice-btn.on { color: var(--accent); border-color: var(--accent2); }
-  #voice-tools { display: flex; gap: 6px; align-self: center; transition: opacity .2s; }
+  #voice-tools { display: flex; gap: 6px; align-items: center; flex: 1; min-width: 0; transition: opacity .2s; }
   #voice-tools.dim { opacity: .5; }
   #voice-select {
     background: var(--panel); border: 1px solid var(--line); border-radius: 6px; color: var(--dim);
-    font: inherit; font-size: 12px; padding: 3px 6px; max-width: 190px; cursor: pointer; outline: none;
+    font: inherit; font-size: 12px; padding: 3px 6px; flex: 1; min-width: 0; cursor: pointer; outline: none;
   }
   #voice-test {
     background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--dim);
     padding: 3px 8px; cursor: pointer; font: inherit; font-size: 12px;
   }
   #voice-select:hover, #voice-test:hover { border-color: var(--accent2); color: var(--accent); }
+
+  /* label manager */
+  #lm-list { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; }
+  .lm-row { display: flex; gap: 6px; align-items: center; }
+  .lm-row input[type=color], #lm-color {
+    width: 26px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 4px;
+    background: none; cursor: pointer; flex: none;
+  }
+  .lm-row input[type=text], #lm-name {
+    flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+    color: var(--text); font: inherit; font-size: 12px; padding: 2px 6px; outline: none;
+  }
+  .lm-row input[type=text]:focus, #lm-name:focus { border-color: var(--accent2); }
+  .lm-row .lm-n { color: var(--faint); font-size: 10px; min-width: 14px; text-align: right; }
+  .lm-row button { background: none; border: none; color: var(--faint); cursor: pointer; font: inherit; font-size: 12px; }
+  .lm-row button:hover { color: var(--danger); }
+  #lm-new { display: flex; gap: 6px; align-items: center; }
+  #lm-new button {
+    background: var(--accent2); border: none; border-radius: 4px; color: #eaf6ff;
+    font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
+  }
+  #lm-new button:hover { background: var(--accent); color: #06222f; }
+
+  /* label picker (card "+" and drawer "+ label") */
+  #label-picker {
+    position: fixed; z-index: 50; display: none; flex-direction: column; gap: 6px;
+    background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+    width: 210px; box-shadow: 0 10px 24px rgba(0,0,0,.5);
+  }
+  #label-picker.open { display: flex; }
+  #lp-input {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 4px; color: var(--text);
+    font: inherit; font-size: 12px; padding: 4px 8px; outline: none;
+  }
+  #lp-input:focus { border-color: var(--accent2); }
+  #lp-list { display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow-y: auto; }
+  .lp-item { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .lp-item:hover { background: var(--panel2); }
+  .lp-item .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .lp-item.create { color: var(--accent); }
 
   /* board: columns share the full viewport width; each scrolls internally under a fixed header */
   #board { flex: 1; min-height: 0; display: flex; gap: 14px; padding: 16px 18px; overflow-x: auto; }
@@ -88,6 +146,14 @@
   .card .meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
   .card .ago { color: var(--faint); font-size: 11px; }
   .card .thread-n { color: var(--faint); font-size: 11px; }
+  .card .meta-r { display: flex; gap: 8px; align-items: center; }
+  .card .add-label {
+    font-size: 12px; line-height: 1.2; color: var(--faint); border: 1px solid var(--line);
+    border-radius: 10px; padding: 0 6px; cursor: pointer; opacity: 0; transition: opacity .12s;
+  }
+  .card:hover .add-label { opacity: 1; }
+  .card .add-label:hover { color: var(--accent); border-color: var(--accent2); }
+  @media (hover: none) { .card .add-label { opacity: .6; } } /* touch: always visible */
   .badges { display: flex; flex-wrap: wrap; gap: 4px; }
   .badge { font-size: 10.5px; padding: 1px 7px; border-radius: 10px; border: 1px solid; }
   .badge.success { color: var(--ok); border-color: var(--ok); }
@@ -131,10 +197,10 @@
   .dlabel button { background: none; border: none; color: var(--faint); cursor: pointer; font: inherit; font-size: 10px; padding: 0; }
   .dlabel button:hover { color: var(--danger); }
   #d-label-add {
-    background: var(--panel); border: 1px dashed var(--line); border-radius: 4px; color: var(--text);
-    font: inherit; font-size: 11px; padding: 2px 8px; width: 90px; outline: none;
+    background: var(--panel); border: 1px dashed var(--line); border-radius: 4px; color: var(--dim);
+    font: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer; outline: none;
   }
-  #d-label-add:focus { border-color: var(--accent2); }
+  #d-label-add:hover, #d-label-add:focus { border-color: var(--accent2); color: var(--accent); }
 
   /* markdown */
   .md h1, .md h2, .md h3 { margin: 10px 0 5px; line-height: 1.25; }
@@ -196,12 +262,31 @@
     <button id="filter-clear" title="clear filter">✕</button>
   </span>
   <span id="status-dot" title="connecting…">🔴</span>
-  <button id="voice-btn" title="speak new agent messages">🔊 off</button>
-  <span id="voice-tools" class="dim">
-    <select id="voice-select" title="TTS voice"></select>
-    <button id="voice-test" title="test the selected voice">▶</button>
-  </span>
+  <button id="gear" title="settings">⚙️</button>
 </header>
+
+<div id="settings-panel">
+  <div class="sp-title">voice</div>
+  <div class="sp-row">
+    <button id="voice-btn" title="speak new agent messages">🔊 off</button>
+    <span id="voice-tools" class="dim">
+      <select id="voice-select" title="TTS voice"></select>
+      <button id="voice-test" title="test the selected voice">▶</button>
+    </span>
+  </div>
+  <div class="sp-title">labels</div>
+  <div id="lm-list"></div>
+  <form id="lm-new">
+    <input id="lm-color" type="color" value="#4cc2ff" title="label color">
+    <input id="lm-name" placeholder="new label…" autocomplete="off">
+    <button type="submit">add</button>
+  </form>
+</div>
+
+<div id="label-picker">
+  <input id="lp-input" placeholder="add label…" autocomplete="off">
+  <div id="lp-list"></div>
+</div>
 
 <div id="board"><div class="empty">waiting for board…</div></div>
 
@@ -489,9 +574,18 @@ function badgesHtml(c) {
     '<span class="badge ' + (['success','warn','danger','info','neutral'].includes(b.tone) ? b.tone : 'neutral') +
     (filterSelected('tag', b.text) ? ' active' : '') + '" title="filter by this badge">' + esc(b.text) + '</span>').join('');
 }
+function registryLabels() { return ((doc && doc.labels) || []).filter((l) => l && l.name); }
+function labelColor(name) { // registry color, re-validated before any style interpolation
+  const l = registryLabels().find((x) => x.name === name);
+  return l && /^#[0-9a-fA-F]{6}$/.test(l.color || '') ? l.color : null;
+}
 function labelsHtml(c) {
-  return (c.labels || []).map((t) =>
-    '<span class="label' + (filterSelected('tag', t) ? ' active' : '') + '" title="filter by this label">' + esc(t) + '</span>').join('');
+  return (c.labels || []).map((t) => {
+    const active = filterSelected('tag', t);
+    const col = active ? null : labelColor(t); // active class styling wins over registry color
+    const style = col ? ' style="border-color:' + col + ';color:' + col + ';border-style:solid"' : '';
+    return '<span class="label' + (active ? ' active' : '') + '"' + style + ' title="filter by this label">' + esc(t) + '</span>';
+  }).join('');
 }
 function linksHtml(c) {
   return (c.links || []).map((l) =>
@@ -507,8 +601,9 @@ function cardHtml(c, ownerAccent) {
     (badges ? '<div class="badges">' + badges + '</div>' : '') +
     (c.summary ? '<div class="summary">' + esc(c.summary) + '</div>' : '') +
     (links ? '<div class="links">' + links + '</div>' : '') +
-    '<div class="meta"><span class="ago">' + ago(c.updated) + '</span>' +
-    (tn ? '<span class="thread-n">💬 ' + tn + '</span>' : '') + '</div></div>';
+    '<div class="meta"><span class="ago">' + ago(c.updated) + '</span><span class="meta-r">' +
+    (tn ? '<span class="thread-n">💬 ' + tn + '</span>' : '') +
+    '<span class="add-label" title="add label">+</span></span></div></div>';
 }
 
 function render() {
@@ -558,6 +653,7 @@ function render() {
     el.onclick = (e) => {
       const t = e.target;
       if (t.classList.contains('badge') || t.classList.contains('label')) { toggleFilter('tag', t.textContent); return; }
+      if (t.classList.contains('add-label')) { openLabelPicker(el.dataset.id, t); return; }
       openDrawer(el.dataset.id);
     };
   });
@@ -576,6 +672,11 @@ function render() {
   const n = (doc.chat || []).length;
   document.getElementById('chat-n').textContent = n ? String(n) : '';
   document.querySelector('#chat-toggle span').textContent = awaiting.has('chat') ? '💬 chat ⏳' : '💬 chat';
+
+  // keep the open label picker / settings panel in step with fresh board data
+  if (pickerCardId) renderPicker();
+  const sp = document.getElementById('settings-panel');
+  if (sp.classList.contains('open')) renderLabelManager();
 
   applyFilter();
 }
@@ -620,12 +721,12 @@ document.getElementById('d-detail').onclick = (e) => {
 // ---------- user-owned labels (persisted per card; agents never touch them) ----------
 function renderDrawerLabels(card) {
   const wrap = document.getElementById('d-labels');
-  const prev = document.getElementById('d-label-add');
-  const keep = prev ? { value: prev.value, focused: document.activeElement === prev } : null;
   wrap.textContent = '';
   for (const t of card.labels || []) {
     const chip = document.createElement('span');
     chip.className = 'dlabel';
+    const col = labelColor(t);
+    if (col) { chip.style.borderColor = col; chip.style.color = col; chip.style.borderStyle = 'solid'; }
     const txt = document.createElement('span');
     txt.textContent = t;
     txt.title = 'filter by this label';
@@ -637,22 +738,12 @@ function renderDrawerLabels(card) {
     chip.append(txt, x);
     wrap.appendChild(chip);
   }
-  const inp = document.createElement('input');
-  inp.id = 'd-label-add';
-  inp.placeholder = '+ label';
-  inp.autocomplete = 'off';
-  inp.onkeydown = (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const v = inp.value.trim();
-      if (v && !(card.labels || []).includes(v)) saveLabels(card.id, (card.labels || []).concat(v));
-      inp.value = '';
-    } else if (e.key === 'Escape') {
-      inp.value = ''; inp.blur(); e.stopPropagation();
-    }
-  };
-  wrap.appendChild(inp);
-  if (keep) { inp.value = keep.value; if (keep.focused) inp.focus(); }
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.id = 'd-label-add';
+  btn.textContent = '+ label';
+  btn.onclick = () => openLabelPicker(card.id, btn);
+  wrap.appendChild(btn);
 }
 async function saveLabels(id, labels) {
   await fetch('/api/cards', {
@@ -660,6 +751,146 @@ async function saveLabels(id, labels) {
     body: JSON.stringify({ update: [{ id, labels }] }), // update = merge onto existing card only
   });
 }
+
+// ---------- label picker (card "+" and drawer "+ label"; autocomplete over the registry) ----------
+const lpEl = document.getElementById('label-picker');
+const lpInput = document.getElementById('lp-input');
+const lpList = document.getElementById('lp-list');
+let pickerCardId = null;
+function openLabelPicker(cardId, anchor) {
+  pickerCardId = cardId;
+  const r = anchor.getBoundingClientRect();
+  lpEl.classList.add('open');
+  lpEl.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 218)) + 'px';
+  lpEl.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 120)) + 'px';
+  lpInput.value = '';
+  renderPicker();
+  lpInput.focus();
+}
+function closeLabelPicker() { pickerCardId = null; lpEl.classList.remove('open'); }
+function pickerChoices() {
+  const card = ((doc && doc.cards) || []).find((c) => c.id === pickerCardId);
+  if (!card) return null;
+  const q = lpInput.value.trim();
+  const ql = q.toLowerCase();
+  const have = new Set(card.labels || []);
+  const names = registryLabels().map((l) => l.name).filter((n) => !have.has(n));
+  const matches = names.filter((n) => n.toLowerCase().includes(ql));
+  const creatable = q && !registryLabels().some((l) => l.name.toLowerCase() === ql) && !have.has(q) ? q : null;
+  return { card, q, matches, creatable };
+}
+function renderPicker() {
+  if (!pickerCardId) return;
+  const ch = pickerChoices();
+  if (!ch) { closeLabelPicker(); return; }
+  lpList.textContent = '';
+  const addRow = (name, isCreate) => {
+    const row = document.createElement('div');
+    row.className = 'lp-item' + (isCreate ? ' create' : '');
+    if (!isCreate) {
+      const sw = document.createElement('span');
+      sw.className = 'sw';
+      sw.style.background = labelColor(name) || 'var(--faint)';
+      row.appendChild(sw);
+    }
+    const t = document.createElement('span');
+    t.textContent = isCreate ? 'create "' + name + '"' : name;
+    row.appendChild(t);
+    row.onclick = (e) => { e.stopPropagation(); addLabelToCard(ch.card, name); };
+    lpList.appendChild(row);
+  };
+  for (const n of ch.matches.slice(0, 12)) addRow(n, false);
+  if (ch.creatable) addRow(ch.creatable, true);
+}
+function addLabelToCard(card, name) {
+  if (!name || (card.labels || []).includes(name)) return;
+  saveLabels(card.id, (card.labels || []).concat(name)); // server auto-registers unknown names
+  lpInput.value = '';
+}
+lpInput.oninput = renderPicker;
+lpInput.onkeydown = (e) => {
+  if (e.key === 'Escape') { closeLabelPicker(); e.stopPropagation(); return; }
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const ch = pickerChoices();
+  if (!ch) { closeLabelPicker(); return; }
+  if (!ch.q && !ch.matches.length) { closeLabelPicker(); return; }
+  const exact = ch.matches.find((n) => n.toLowerCase() === ch.q.toLowerCase());
+  const pick = exact || ch.matches[0] || ch.creatable;
+  if (pick) addLabelToCard(ch.card, pick); else closeLabelPicker();
+};
+document.addEventListener('click', (e) => {
+  if (lpEl.classList.contains('open') && !lpEl.contains(e.target) &&
+      !e.target.classList.contains('add-label') && e.target.id !== 'd-label-add') closeLabelPicker();
+});
+
+// ---------- settings (gear): voice controls + label manager ----------
+const gearBtn = document.getElementById('gear');
+const spEl = document.getElementById('settings-panel');
+gearBtn.onclick = () => {
+  const open = !spEl.classList.contains('open');
+  spEl.classList.toggle('open', open);
+  gearBtn.classList.toggle('on', open);
+  if (open) renderLabelManager();
+};
+document.addEventListener('click', (e) => {
+  if (spEl.classList.contains('open') && !spEl.contains(e.target) && e.target !== gearBtn) {
+    spEl.classList.remove('open');
+    gearBtn.classList.remove('on');
+  }
+});
+async function labelApi(body) {
+  const r = await fetch('/api/labels', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!r.ok) { try { alert((await r.json()).error); } catch (e) {} }
+}
+function renderLabelManager() {
+  const list = document.getElementById('lm-list');
+  if (list.contains(document.activeElement)) return; // don't clobber an in-progress rename
+  list.textContent = '';
+  for (const l of registryLabels()) {
+    const row = document.createElement('div');
+    row.className = 'lm-row';
+    const color = document.createElement('input');
+    color.type = 'color';
+    color.value = /^#[0-9a-fA-F]{6}$/.test(l.color || '') ? l.color : '#66788a';
+    color.title = 'recolor';
+    color.onchange = () => labelApi({ recolor: { name: l.name, color: color.value } });
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.value = l.name;
+    name.title = 'rename (Enter or blur commits)';
+    const commit = () => {
+      const to = name.value.trim();
+      if (to && to !== l.name) labelApi({ rename: { from: l.name, to } });
+      else name.value = l.name;
+    };
+    name.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); name.blur(); }
+      else if (e.key === 'Escape') { name.value = l.name; name.blur(); e.stopPropagation(); }
+    };
+    name.onblur = commit;
+    const n = document.createElement('span');
+    n.className = 'lm-n';
+    n.title = 'cards with this label';
+    n.textContent = String(((doc && doc.cards) || []).filter((c) => (c.labels || []).includes(l.name)).length);
+    const del = document.createElement('button');
+    del.type = 'button'; del.textContent = '✕'; del.title = 'delete label';
+    del.onclick = () => {
+      if (confirm('Delete label "' + l.name + '" from the board and all cards?')) labelApi({ delete: { name: l.name } });
+    };
+    row.append(color, name, n, del);
+    list.appendChild(row);
+  }
+}
+document.getElementById('lm-new').onsubmit = (e) => {
+  e.preventDefault();
+  const name = document.getElementById('lm-name');
+  const v = name.value.trim();
+  if (v) labelApi({ create: { name: v, color: document.getElementById('lm-color').value } });
+  name.value = '';
+};
 function openDrawer(id) { openCardId = id; render(); }
 function closeDrawer() { openCardId = null; document.getElementById('drawer').classList.remove('open'); render(); }
 document.getElementById('d-close').onclick = closeDrawer;
@@ -749,7 +980,9 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault(); filterInput.focus(); return;
   }
   if (e.key === 'Escape') {
-    if (openCardId) closeDrawer();
+    if (spEl.classList.contains('open')) { spEl.classList.remove('open'); gearBtn.classList.remove('on'); }
+    else if (pickerCardId) closeLabelPicker();
+    else if (openCardId) closeDrawer();
     else if (filterInput.value || selFilters.length) clearFilter();
   }
 });

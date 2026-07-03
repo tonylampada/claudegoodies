@@ -60,7 +60,8 @@ Rules:
     "links": [{"text": "PR #123", "url": "https://…"}],
     "detail_md": "…", "thread": [{"author": "agent|user", "text": "…", "ts": "…"}]
   }],
-  "chat": [{"author": "agent|user", "text": "…", "ts": "…"}]
+  "chat": [{"author": "agent|user", "text": "…", "ts": "…"}],
+  "labels": [{"name": "user-owned", "color": "#4cc2ff"}]
 }
 ```
 
@@ -74,6 +75,11 @@ and full `sync` docs that omit the field leave existing labels intact (the serve
 forward by card id); only sending an explicit `labels` value overwrites. PATCH also accepts
 `update: [...]` which merges onto existing cards only (404s on unknown id, never creates) — the
 UI uses it for label edits.
+The board-level `labels` registry (`{name, color}`, `#rrggbb`) is user-owned too: agents never
+touch it; a `sync` doc without the field inherits the existing registry, and unknown card label
+names auto-register with a palette color. The UI manages it (create/rename/recolor/delete, with
+rename/delete cascading to cards) via `POST /api/labels`
+`{create:{name,color?}} | {rename:{from,to}} | {recolor:{name,color}} | {delete:{name}}`.
 Badges, labels, and owner names in the UI are click-to-filter (AND-composed with the text filter).
 
 ## Agent loop

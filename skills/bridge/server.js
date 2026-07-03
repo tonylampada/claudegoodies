@@ -61,7 +61,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { cleanup(); proc
 // ---------- board state ----------
 function now() { return new Date().toISOString(); }
 function defaultBoard() {
-  return { title: opts.board, subtitle: '', updated: now(), columns: [], cards: [], chat: [] };
+  return { title: opts.board, subtitle: '', updated: now(), columns: [], cards: [], chat: [], labels: [] };
 }
 function loadBoard() {
   try { return Object.assign(defaultBoard(), JSON.parse(fs.readFileSync(BOARD_FILE, 'utf8'))); }
@@ -73,6 +73,25 @@ function saveBoard() {
   const tmp = BOARD_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(board, null, 2));
   fs.renameSync(tmp, BOARD_FILE);
+}
+
+// ---------- label registry (user-owned, like card labels; persisted in board json) ----------
+const LABEL_PALETTE = ['#4cc2ff', '#2fbf71', '#e2b93b', '#c678dd', '#e2795b', '#56b6c2', '#98c379', '#e06c75'];
+function validColor(c) { return typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : null; }
+function labelIndex(name) {
+  if (!Array.isArray(board.labels)) board.labels = [];
+  return board.labels.findIndex((l) => l && l.name === name);
+}
+// Auto-register unknown card label names with a default palette color.
+function registerCardLabels() {
+  if (!Array.isArray(board.labels)) board.labels = [];
+  for (const c of board.cards) {
+    for (const n of c.labels || []) {
+      if (typeof n === 'string' && n && labelIndex(n) < 0) {
+        board.labels.push({ name: n, color: LABEL_PALETTE[board.labels.length % LABEL_PALETTE.length] });
+      }
+    }
+  }
 }
 
 // ---------- feedback queue (durable jsonl, monotonic seq) ----------
@@ -172,13 +191,16 @@ const server = http.createServer(async (req, res) => {
       const doc = JSON.parse(await readBody(req));
       const prev = board;
       board = Object.assign(defaultBoard(), doc);
-      // labels are user-owned: a full sync whose cards omit the field inherits the old labels
+      // labels are user-owned: a full sync whose cards omit the field inherits the old labels,
+      // and a doc without a labels registry inherits the old registry
       for (const c of board.cards) {
         if (c && c.id && c.labels === undefined) {
           const old = prev.cards.find((o) => o.id === c.id);
           if (old && old.labels) c.labels = old.labels;
         }
       }
+      if (doc.labels === undefined) board.labels = Array.isArray(prev.labels) ? prev.labels : [];
+      registerCardLabels();
       saveBoard(); broadcast(); pruneAwaiting();
       return sendJson(res, 200, { ok: true, updated: board.updated });
     }
@@ -207,8 +229,50 @@ const server = http.createServer(async (req, res) => {
         }
       }
       for (const id of body.remove || []) board.cards = board.cards.filter((c) => c.id !== id);
+      registerCardLabels();
       saveBoard(); broadcast(); pruneAwaiting();
       return sendJson(res, 200, { ok: true, cards: board.cards.length });
+    }
+    if (route === 'POST /api/labels') {
+      // registry mutations: {create:{name,color?}} | {rename:{from,to}} | {recolor:{name,color}} | {delete:{name}}
+      const b = JSON.parse(await readBody(req));
+      if (!Array.isArray(board.labels)) board.labels = [];
+      if (b.create) {
+        const name = String(b.create.name || '').trim();
+        if (!name) return sendJson(res, 400, { error: 'label name required' });
+        const color = validColor(b.create.color);
+        const i = labelIndex(name);
+        if (i >= 0) { if (color) board.labels[i].color = color; } // merge, never duplicate
+        else board.labels.push({ name, color: color || LABEL_PALETTE[board.labels.length % LABEL_PALETTE.length] });
+      } else if (b.rename) {
+        const from = String(b.rename.from || ''), to = String(b.rename.to || '').trim();
+        const i = labelIndex(from);
+        if (i < 0) return sendJson(res, 404, { error: 'unknown label: ' + from });
+        if (!to) return sendJson(res, 400, { error: 'new name required' });
+        if (to !== from && labelIndex(to) >= 0) return sendJson(res, 400, { error: 'label exists: ' + to });
+        board.labels[i].name = to;
+        for (const c of board.cards) { // cascade to every card carrying it
+          if (Array.isArray(c.labels)) c.labels = c.labels.map((n) => (n === from ? to : n)).filter((n, k, a) => a.indexOf(n) === k);
+        }
+      } else if (b.recolor) {
+        const i = labelIndex(String(b.recolor.name || ''));
+        const color = validColor(b.recolor.color);
+        if (i < 0) return sendJson(res, 404, { error: 'unknown label: ' + String(b.recolor.name || '') });
+        if (!color) return sendJson(res, 400, { error: 'color must be #rrggbb' });
+        board.labels[i].color = color;
+      } else if (b.delete) {
+        const name = String(b.delete.name || '');
+        const i = labelIndex(name);
+        if (i < 0) return sendJson(res, 404, { error: 'unknown label: ' + name });
+        board.labels.splice(i, 1);
+        for (const c of board.cards) { // cascade removal from every card
+          if (Array.isArray(c.labels)) c.labels = c.labels.filter((n) => n !== name);
+        }
+      } else {
+        return sendJson(res, 400, { error: 'expected create|rename|recolor|delete' });
+      }
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true, labels: board.labels });
     }
     if (route === 'POST /api/message') {
       const body = JSON.parse(await readBody(req));
