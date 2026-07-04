@@ -12,7 +12,8 @@ const { spawn } = require('child_process');
 
 const SELF_DIR = path.dirname(fs.realpathSync(process.argv[1]));
 const SERVER_JS = path.join(SELF_DIR, 'server.js');
-const BRIDGE_DIR = path.join(os.homedir(), '.bridge');
+// State root: $BRIDGE_DIR when set (tests point it at a temp dir), else ~/.bridge.
+const BRIDGE_DIR = process.env.BRIDGE_DIR || path.join(os.homedir(), '.bridge');
 const BOARDS_DIR = path.join(BRIDGE_DIR, 'boards');
 
 function die(msg) { console.error(msg); process.exit(1); }

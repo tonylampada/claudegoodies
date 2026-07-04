@@ -42,7 +42,8 @@ function parseArgs(argv) {
 const opts = parseArgs(process.argv.slice(2));
 
 // ---------- paths ----------
-const BRIDGE_DIR = path.join(os.homedir(), '.bridge');
+// State root: $BRIDGE_DIR when set (tests point it at a temp dir), else ~/.bridge.
+const BRIDGE_DIR = process.env.BRIDGE_DIR || path.join(os.homedir(), '.bridge');
 const BOARDS_DIR = path.join(BRIDGE_DIR, 'boards');
 const BOARD_FILE = path.join(BOARDS_DIR, opts.board + '.json');
 const ARCHIVE_FILE = path.join(BOARDS_DIR, opts.board + '.archive.jsonl');
