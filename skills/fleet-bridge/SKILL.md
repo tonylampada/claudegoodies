@@ -25,7 +25,9 @@ well as you play your part, and no better.
 `fm-board-sync` (this skill dir) is Loop B: it reads a firstmate home's on-disk state
 (read-only) and feeds the board every run. It alone handles:
 
-- **Events** from status lines and PR state (deduped, leveled).
+- **Events** from status lines, PR state, and worker lease transitions (deduped,
+  typed by kind).
+- **The kinds map** — registered on every run (`PUT /api/kinds`, idempotent).
 - **Worker lease** via `status.set` — evidence-based (status/turn-end mtimes), with
   server-side TTL decay to an honest `idle`; never pane sampling. A dead runtime
   window clears the lease (worker absent) even while the task record persists.
@@ -121,9 +123,13 @@ rides main chat (`say chat`).
 captain's native-language conversation stays in the agent chat. Captain-facing language
 rules apply (outcomes, not machinery; full PR URLs).
 
-**Event levels.** Level 1 = bell-worthy: handoffs (your moves), done / failed /
-needs-decision / blocked signals, merges, kills. Level 2 = everything else (working
-notes, PR opened, created) — timeline only, behind the "· N events ·" expanders.
+**Event kinds and levels.** The feeder registers the fleet kinds map every run;
+levels resolve from it (bridge structural kinds — created, handoff, landed, … — stay
+built-in). Level 1 = bell-worthy: `done` ✅, `failed` 💥, `needs-you` ✋, `blocked` 🚧,
+plus handoffs (your moves) and merge/kill archives. Level 2 = timeline only, behind
+the "· N events ·" expanders: `progress` 📣 (any other status line), `pr-opened` 🔀,
+`pr-merged` 🟣 (the attribute note before the merge-archive's `landed` bell),
+`worker-linked` 🔗 / `worker-gone` 💤 (lease transitions, fired once per change).
 
 **Board = mirror.** Firstmate's files stay canonical; when they disagree, fix the board.
 

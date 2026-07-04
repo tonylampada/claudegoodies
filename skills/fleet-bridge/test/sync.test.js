@@ -180,6 +180,7 @@ test('prs list: {url, state} entries from meta; PR opened event at level 2', asy
     const ev = c.events.find((e) => e.text === 'PR opened: ' + url);
     assert.ok(ev, 'PR opened event exists');
     assert.strictEqual(ev.level, 2);
+    assert.strictEqual(ev.kind, 'pr-opened');
   } finally {
     await s.stop();
     fx.rmHome(home);
@@ -351,6 +352,12 @@ test('archive: Done verb merged -> card.archive(reason merged), prs marked merge
     assert.strictEqual(recs.length, 1);
     assert.strictEqual(recs[0].reason, 'merged'); // the enum, sent explicitly
     assert.deepStrictEqual(recs[0].card.attributes.prs, [{ url, state: 'merged' }]);
+    // the pr-merged attribute note landed BEFORE the archive, frozen in the
+    // snapshot at level 2 (the archive itself emits the level-1 landed bell)
+    const merged = recs[0].card.events.find((e) => e.kind === 'pr-merged');
+    assert.ok(merged, 'pr-merged event frozen in the archived snapshot');
+    assert.strictEqual(merged.text, url);
+    assert.strictEqual(merged.level, 2);
 
     // a second run archives nothing (card already gone)
     const plan = await fx.syncPlan(s, home);
@@ -563,12 +570,141 @@ test('events: deduped by exact text across runs; captain-relevant verbs are leve
       assert.strictEqual(texts.filter((x) => x === t).length, 1, t + ' appears once');
     }
     const done = c.events.find((e) => /^done:/.test(e.text));
-    assert.strictEqual(done.level, 1);
-    assert.strictEqual(done.kind, 'success');
+    assert.strictEqual(done.level, 1); // level resolved from the registered kinds map
+    assert.strictEqual(done.kind, 'done');
     const decision = c.events.find((e) => /^needs-decision:/.test(e.text));
     assert.strictEqual(decision.level, 1);
-    assert.strictEqual(decision.kind, 'question');
-    assert.strictEqual(c.events.find((e) => /^working:/.test(e.text)).level, 2);
+    assert.strictEqual(decision.kind, 'needs-you');
+    const working = c.events.find((e) => /^working:/.test(e.text));
+    assert.strictEqual(working.level, 2);
+    assert.strictEqual(working.kind, 'progress');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('kinds map: registered idempotently on every apply run', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  const KINDS = {
+    'progress': { emoji: '📣', level: 2 },
+    'done': { emoji: '✅', level: 1 },
+    'failed': { emoji: '💥', level: 1 },
+    'needs-you': { emoji: '✋', level: 1 },
+    'blocked': { emoji: '🚧', level: 1 },
+    'worker-linked': { emoji: '🔗', level: 2 },
+    'worker-gone': { emoji: '💤', level: 2 },
+    'pr-opened': { emoji: '🔀', level: 2 },
+    'pr-merged': { emoji: '🟣', level: 2 },
+  };
+  try {
+    fx.writeBacklog(home, {});
+    let r = await fx.syncApply(s, home);
+    assert.strictEqual(r.code, 0, r.stderr);
+    let k = (await s.api('GET', '/api/kinds')).body;
+    assert.deepStrictEqual(k.registered, KINDS);
+    // structural built-ins stay merged under the registered map
+    assert.strictEqual(k.kinds.landed.level, 1);
+    assert.strictEqual(k.kinds.done.level, 1);
+
+    r = await fx.syncApply(s, home); // idempotent replace: identical map, no-op
+    assert.strictEqual(r.code, 0, r.stderr);
+    k = (await s.api('GET', '/api/kinds')).body;
+    assert.deepStrictEqual(k.registered, KINDS);
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('status verbs: failed -> failed and blocked -> blocked, levels from the map', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app']);
+    fx.writeStatus(home, 'fix-widget-a1', [
+      'blocked: waiting on upstream PR',
+      'failed: repro never converged',
+    ]);
+    await fx.syncApply(s, home);
+
+    const c = await fx.getCard(s, 'fix-widget-a1');
+    const blocked = c.events.find((e) => /^blocked:/.test(e.text));
+    assert.strictEqual(blocked.kind, 'blocked');
+    assert.strictEqual(blocked.level, 1);
+    const failed = c.events.find((e) => /^failed:/.test(e.text));
+    assert.strictEqual(failed.kind, 'failed');
+    assert.strictEqual(failed.level, 1);
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('worker transitions: linked once on link, gone once on lease clear, relink fires again', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  const win = 'fleet:fm-fix-widget-a1';
+  const linkedText = 'worker fix-widget-a1 linked';
+  const goneText = 'worker fix-widget-a1 gone';
+  const events = async () => (await fx.getCard(s, 'fix-widget-a1')).events;
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['window=' + win, 'project=projects/demo-app']);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing']);
+
+    // first link: the card had no served worker id -> one worker-linked event
+    await fx.syncApply(s, home, { FM_SYNC_LIVE_WINDOWS: win });
+    let linked = (await events()).filter((e) => e.text === linkedText);
+    assert.strictEqual(linked.length, 1);
+    assert.strictEqual(linked[0].kind, 'worker-linked');
+    assert.strictEqual(linked[0].level, 2);
+
+    // transition-driven, not state-driven: a re-assert run repeats nothing
+    await fx.syncApply(s, home, { FM_SYNC_LIVE_WINDOWS: win });
+    assert.strictEqual((await events()).filter((e) => e.text === linkedText).length, 1);
+
+    // lease cleared (dead window): one worker-gone event, once
+    await fx.syncApply(s, home, { FM_SYNC_LIVE_WINDOWS: '' });
+    let gone = (await events()).filter((e) => e.text === goneText);
+    assert.strictEqual(gone.length, 1);
+    assert.strictEqual(gone[0].kind, 'worker-gone');
+    assert.strictEqual(gone[0].level, 2);
+    await fx.syncApply(s, home, { FM_SYNC_LIVE_WINDOWS: '' }); // already unlinked: quiet
+    assert.strictEqual((await events()).filter((e) => e.text === goneText).length, 1);
+
+    // relink after gone: the identical text fires AGAIN (transition-scoped,
+    // never swallowed by exact-text dedupe)
+    await fx.syncApply(s, home, { FM_SYNC_LIVE_WINDOWS: win });
+    assert.strictEqual((await events()).filter((e) => e.text === linkedText).length, 2);
+    assert.strictEqual((await events()).filter((e) => e.text === goneText).length, 1);
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('worker-gone: teardown (meta gone) clears the lease with one worker-gone event', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app']);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing']);
+    await fx.syncApply(s, home);
+
+    // torn down: meta removed, task no longer in flight -> unlink sweep path
+    fx.rmMeta(home, 'fix-widget-a1');
+    fx.writeBacklog(home, {});
+    await fx.syncApply(s, home);
+    await fx.syncApply(s, home); // already unlinked: no repeat
+
+    const evs = (await fx.getCard(s, 'fix-widget-a1')).events
+      .filter((e) => e.kind === 'worker-gone');
+    assert.strictEqual(evs.length, 1);
+    assert.strictEqual(evs[0].text, 'worker fix-widget-a1 gone');
   } finally {
     await s.stop();
     fx.rmHome(home);
