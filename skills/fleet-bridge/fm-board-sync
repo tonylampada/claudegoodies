@@ -14,7 +14,15 @@
 //        - status-file lines: done/failed/needs-decision/blocked -> level 1
 //          (success/alert/question/alert), other lines -> level 2
 //   4. Patches pr / pr_state attributes when they change.
-//   5. Archives a card when its task lands in backlog Done with verb "merged"
+//   5. Feeds the `worker` attribute (the UI's left-edge stripe) from REAL
+//      crewmate state: busy pane -> working, parked on needs-decision/blocked
+//      -> needs-you, alive-but-idle window -> idle, dead/no window -> cleared
+//      (attribute removed, no stripe). Derived from state/<id>.meta +
+//      state/<id>.status + one batched tmux window list + bounded per-task
+//      pane captures — never from fm-crew-state.sh (which shells out to
+//      no-mistakes with multi-second timeouts per task; too slow for a
+//      run-on-every-wake feeder).
+//   6. Archives a card when its task lands in backlog Done with verb "merged"
 //      (kill = archive; the card leaves the board, one level-1 ✅ notification).
 //
 // Aliases: <home>/data/board-aliases lines "<task-id> <card-id>" feed a task's
@@ -31,6 +39,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { execFileSync } = require('child_process');
 
 function warn(msg) { process.stderr.write('fm-board-sync: ' + msg + '\n'); }
 
@@ -110,7 +119,7 @@ function parseBacklog(file) {
 
 // ---------- meta / status parsing ----------
 function parseMetas(stateDir) {
-  const metas = new Map(); // id -> {kind, project, prs[]}
+  const metas = new Map(); // id -> {kind, project, window, backend, prs[]}
   let names;
   try { names = fs.readdirSync(stateDir).filter((n) => n.endsWith('.meta')).sort(); }
   catch (e) { return metas; }
@@ -118,7 +127,7 @@ function parseMetas(stateDir) {
     const id = name.slice(0, -'.meta'.length);
     const src = readFileSafe(path.join(stateDir, name));
     if (src == null) continue;
-    const m = { kind: null, project: null, prs: [] };
+    const m = { kind: null, project: null, window: null, backend: null, prs: [] };
     for (const line of src.split('\n')) {
       const kv = /^(\w+)=(.*)$/.exec(line.trim());
       if (!kv) continue;
@@ -142,6 +151,76 @@ function classifyStatusLine(line) {
   if (/^needs-decision\b/i.test(line)) return { level: 1, kind: 'question' };
   if (/^blocked\b/i.test(line)) return { level: 1, kind: 'alert' };
   return { level: 2, kind: 'info' };
+}
+
+// ---------- worker state (the card's left-edge stripe) ----------
+// Derived from meta + status files + tmux, NOT from fm-crew-state.sh: that
+// helper shells out to no-mistakes with a multi-second timeout per task, which
+// is too slow for a feeder that runs on every wake. tmux cost is bounded to
+// ONE `list-windows -a` per run plus at most MAX_PANE_PROBES `capture-pane`
+// calls (only for tasks whose window is live).
+const MAX_PANE_PROBES = 40;
+let panesProbed = 0;
+// Busy footers per harness (mirrors firstmate's fm-tmux-lib.sh):
+// claude/codex "esc to interrupt", opencode "esc interrupt", pi "Working...",
+// grok "Ctrl+c:cancel".
+const BUSY_RE = /esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel/i;
+
+function tmuxExec(args) {
+  try {
+    return execFileSync('tmux', args, { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch (e) { return null; }
+}
+// One batched liveness read; a failure (no tmux, no server) means no live
+// windows, which correctly clears every stripe.
+let liveWindowsCache = null;
+function liveWindows() {
+  if (liveWindowsCache) return liveWindowsCache;
+  const full = new Set(); const bare = new Set();
+  const out = tmuxExec(['list-windows', '-a', '-F', '#{session_name}:#{window_name}']);
+  if (out != null) {
+    for (const line of out.split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      full.add(t);
+      bare.add(t.slice(t.indexOf(':') + 1));
+    }
+  }
+  liveWindowsCache = { full, bare };
+  return liveWindowsCache;
+}
+function windowIsLive(target) {
+  const lw = liveWindows();
+  const base = target.replace(/\.\d+$/, ''); // tolerate a pane suffix
+  return lw.full.has(target) || lw.full.has(base) ||
+    (!base.includes(':') && lw.bare.has(base));
+}
+function paneIsBusy(target) {
+  if (panesProbed >= MAX_PANE_PROBES) return null; // budget spent: unknown
+  panesProbed++;
+  const out = tmuxExec(['capture-pane', '-p', '-t', target, '-S', '-40']);
+  if (out == null) return null;
+  const tail = out.split('\n').filter((l) => l.trim()).slice(-6).join('\n');
+  return BUSY_RE.test(tail);
+}
+// Leading verb of the last non-empty status line ("needs-decision: x" -> "needs-decision").
+function lastStatusVerb(statusLines) {
+  if (!statusLines.length) return null;
+  const line = statusLines[statusLines.length - 1];
+  return line.split(':')[0].trim().toLowerCase();
+}
+// -> 'working' | 'needs-you' | 'idle' | null (clear: no live worker) |
+//    undefined (unreadable here — leave the attribute untouched)
+function workerState(m, statusLines) {
+  if (!m || !m.window) return null;                 // never spawned / torn down
+  if (m.backend && m.backend !== 'tmux') return undefined; // non-tmux backend: no cheap read
+  if (!windowIsLive(m.window)) return null;         // dead window: no stripe
+  const busy = paneIsBusy(m.window);
+  if (busy === null && panesProbed >= MAX_PANE_PROBES) return undefined; // over budget
+  if (busy) return 'working';                       // actively producing
+  const verb = lastStatusVerb(statusLines);
+  if (verb === 'needs-decision' || verb === 'blocked') return 'needs-you';
+  return 'idle';                                    // alive but parked
 }
 
 // ---------- aliases: "<task-id> <card-id>" ----------
@@ -173,17 +252,33 @@ function parseSecondmates(file) {
 
 // ---------- plan for one home ----------
 // Emits {creates:[card], events:[{card,text,level,kind}], attrs:[{card,attributes}],
-//        archives:[{card,reason}]} against the board snapshot.
+//        archives:[{card,reason}], workerDecided:Set<cardId>} against the board
+// snapshot. workerDecided = cards whose worker stripe this home owns this run
+// (set, cleared, or deliberately left alone); main() clears the stripe on any
+// other owned card that still carries one.
 function planHome(home, owner, board) {
   const backlog = parseBacklog(path.join(home, 'data', 'backlog.md'));
   const stateDir = path.join(home, 'state');
   const metas = parseMetas(stateDir);
   const aliases = parseAliases(path.join(home, 'data', 'board-aliases'));
-  const plan = { creates: [], events: [], attrs: [], archives: [] };
+  const plan = { creates: [], events: [], attrs: [], archives: [], workerDecided: new Set() };
 
   const cardId = (taskId) =>
     aliases.get(taskId) || (owner === 'firstmate' ? taskId : owner + ':' + taskId);
   const boardCard = (id) => (board.cards || []).find((c) => c.id === id);
+
+  // Feed the worker stripe for one card. `card` may be null (no board card and
+  // not being created): nothing to feed then. undefined state = leave as-is,
+  // but still ours (protects it from the stale-worker sweep in main()).
+  const feedWorker = (id, card, w) => {
+    plan.workerDecided.add(id);
+    if (w === undefined || !card) return;
+    const cur = (card.attributes || {}).worker;
+    if (card._new) { if (w) card.attributes.worker = w; return; }
+    if (w === null ? cur != null : cur !== w) {
+      plan.attrs.push({ card: id, attributes: { worker: w } }); // null deletes on PATCH
+    }
+  };
 
   // live tasks = in-flight backlog items U live metas (minus secondmate self-records)
   const live = new Map(); // taskId -> {title, repo, kind}
@@ -191,7 +286,14 @@ function planHome(home, owner, board) {
     live.set(it.id, { title: trimTrailingParen(it.text) || it.id, repo: it.repo, kind: null });
   }
   for (const [id, m] of metas) {
-    if (m.kind === 'secondmate') { live.delete(id); continue; }
+    if (m.kind === 'secondmate') {
+      live.delete(id);
+      // No card is created for a secondmate self-record, but if a card exists
+      // for it (alias or direct id), feed its worker stripe from the live pane.
+      const cid = cardId(id);
+      feedWorker(cid, boardCard(cid), workerState(m, parseStatus(stateDir, id)));
+      continue;
+    }
     const t = live.get(id) || { title: id, repo: null, kind: null };
     if (m.kind) t.kind = m.kind;
     if (!t.repo && m.project) t.repo = path.basename(m.project);
@@ -232,10 +334,14 @@ function planHome(home, owner, board) {
     }
 
     // status-file lines -> timeline events
-    for (const line of parseStatus(stateDir, taskId)) {
+    const statusLines = parseStatus(stateDir, taskId);
+    for (const line of statusLines) {
       const c = classifyStatusLine(line);
       addEvent(line, c.level, c.kind);
     }
+
+    // worker stripe from real crewmate state (set when changed, clear when gone)
+    feedWorker(id, card, workerState(m, statusLines));
   }
 
   // merged Done entries -> archive the card (kill = off the board)
@@ -304,14 +410,28 @@ async function main() {
       homes.push({ home: sm.home, owner: sm.id });
     }
   }
+  const workerDecided = new Set();
   for (const h of homes) {
     const p = planHome(h.home, h.owner, board);
     plan.creates.push(...p.creates);
     plan.events.push(...p.events);
     plan.attrs.push(...p.attrs);
     plan.archives.push(...p.archives);
+    for (const id of p.workerDecided) workerDecided.add(id);
   }
   for (const c of plan.creates) delete c._new;
+
+  // Stale-worker sweep: a board card still striped whose task no longer exists
+  // in any planned home (meta gone after teardown) gets its stripe cleared.
+  // Scoped to cards owned by the homes we actually planned, so cards of a
+  // skipped home (--no-secondmates, missing home) are never touched.
+  const plannedOwners = new Set(homes.map((h) => h.owner));
+  for (const c of board.cards || []) {
+    const at = c.attributes || {};
+    if (!at.worker || workerDecided.has(c.id)) continue;
+    if (!plannedOwners.has(at.owner)) continue;
+    plan.attrs.push({ card: c.id, attributes: { worker: null } });
+  }
 
   if (!opts.apply) {
     process.stdout.write(JSON.stringify(plan, null, 2) + '\n');
