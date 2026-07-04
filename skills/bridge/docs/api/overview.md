@@ -16,7 +16,8 @@ Columns are **board configuration**, not a fixed set. A client defines whatever 
 | `column` | one of the board's configured columns | owned state — changes ONLY by deliberate `card.move`, never computed |
 | `type` | client-defined label | sets the icon and what the body is expected to deliver; semantics belong to the client |
 | `tags` | Tag list | free labels for grouping/filtering |
-| attributes | client-defined, e.g. `prs`, `artifacts`, `repo`, `owner` | generic renderable structure — link lists `{url, state}`, resource lists `{uri, label}` (`file://...`, images, docs), plain strings. The board renders them; the client gives them meaning |
+| `artifacts` | list of `{uri, label}` | resource links attached to the card (`file://...`, images, docs) — any agent can hang files on a card; the board can render/open them |
+| attributes | client-defined pairs, e.g. `prs`, `repo`, `owner` | opaque renderable structure — link lists `{url, state}`, plain strings. The board renders them; the client gives them meaning |
 | `body` | markdown | **the deliverable** — always rewritten to current state; never a log (history lives in events) |
 | `status` | Status | the one work signal (below) — first-class, not a loose attribute |
 | `events` | Event list | the timeline |
