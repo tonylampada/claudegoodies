@@ -17,7 +17,9 @@
 //
 // Events are append-only and carry a global monotonic seq. The unified stream =
 // board.events + every card's events, ordered by seq. Notifications are the
-// level-1 slice of that stream; read state persists in board.reads (server-side).
+// level-1 slice of that stream UNION unseen agent-authored card-thread replies
+// (the same per-user read state that derives a card's `unread`); read state
+// persists in board.reads (server-side).
 // Kill = archive: the card is snapshotted to <name>.archive.jsonl (append-only,
 // reason: merged|killed) and removed from the board. No destructive delete.
 // Restore = resurrection: the most recent archived snapshot comes back onto the
@@ -350,6 +352,28 @@ function allEvents() {
   return out;
 }
 
+// The bell: everything the user hasn't seen yet. Level-1 events (read state:
+// notifSeq/notifSeqs) UNION agent-authored card-thread replies (read state: the
+// same per-user thread read marker that derives a card's `unread`, so opening
+// the card clears them). Main-chat agent messages already ride their level-1
+// event, so chat threads are excluded here — no double count. Level-2 events
+// never notify. Reply items are shaped like event items minus the seq
+// (ts/text/actor/card/cardTitle/read) plus kind "reply" to tell them apart.
+function notificationItems(user) {
+  const r = userReads(user);
+  const items = allEvents().filter((e) => e.level === 1)
+    .map((e) => Object.assign({}, e, { read: e.seq <= r.notifSeq || r.notifSeqs.includes(e.seq) }));
+  for (const c of board.cards) {
+    const readMs = lastCardReadMs(c, user);
+    for (const m of c.thread || []) {
+      if (m.author === 'user') continue;
+      items.push({ ts: m.ts, level: 1, kind: 'reply', text: m.text, actor: m.author,
+        card: c.id, cardTitle: c.title, read: Date.parse(m.ts) <= readMs });
+    }
+  }
+  return items.sort((a, b) => (Date.parse(b.ts) - Date.parse(a.ts)) || ((b.seq || 0) - (a.seq || 0)));
+}
+
 // ---------- card mutations ----------
 function createCard(body, actorDefault) {
   const title = String(body.title || '').trim();
@@ -510,9 +534,7 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { archive: recs.slice(-n).reverse() });
     }
     if (route === 'GET /api/notifications') {
-      const r = userReads(url.searchParams.get('user'));
-      const items = allEvents().filter((e) => e.level === 1).reverse()
-        .map((e) => Object.assign({}, e, { read: e.seq <= r.notifSeq || r.notifSeqs.includes(e.seq) }));
+      const items = notificationItems(url.searchParams.get('user'));
       return sendJson(res, 200, { items, unread: items.filter((e) => !e.read).length });
     }
 
@@ -653,7 +675,19 @@ const server = http.createServer(async (req, res) => {
     if (route === 'POST /api/notifications/read') {
       const body = JSON.parse(await readBody(req) || '{}');
       const r = userReads(body.user);
-      if (body.all) { r.notifSeq = board.seq; r.notifSeqs = []; }
+      if (body.all) {
+        r.notifSeq = board.seq; r.notifSeqs = [];
+        // Clearing is reading: unseen agent replies clear via the same thread
+        // read marker that opening the card would set, so mark-all advances it
+        // for every card that still has an unseen reply.
+        const ts = now();
+        for (const c of board.cards) {
+          const readMs = lastCardReadMs(c, body.user);
+          if ((c.thread || []).some((m) => m.author !== 'user' && Date.parse(m.ts) > readMs)) {
+            r.threads['card:' + c.id] = ts;
+          }
+        }
+      }
       else if (Array.isArray(body.seqs)) {
         for (const s of body.seqs) if (Number.isInteger(s) && s > r.notifSeq && !r.notifSeqs.includes(s)) r.notifSeqs.push(s);
       }

@@ -56,7 +56,7 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | `GET /api/cards/<id>` | one card, with derived `status` |
 | `GET /api/status` | `{board, port, cards, seq, feedback_seq, feedback_ack, pid}` |
 | `GET /api/archive?limit=N` | last N archived records, newest first |
-| `GET /api/notifications?user=U` | level-1 events with read flags, `{items, unread}` |
+| `GET /api/notifications?user=U` | `{items, unread}` — level-1 events (read flags from notification read state) UNION agent card-thread replies (kind `reply`, no seq; read flag from the thread read marker), newest first. Main chat is excluded: an agent main-chat message already rides its level-1 event |
 | `GET /api/config` | user config (voice filter) |
 | `GET /api/events` | SSE: `board` (full doc on every change) |
 | `GET /api/poll[?since=N][&nowait=1]` | long-poll the human→agent feedback queue |
@@ -107,7 +107,7 @@ lease id or the card id).
 |---|---|---|
 | `POST /api/message` | `{target, text\|text_md, author?}` | agent → human. Target `chat` or `card:<id>`. A main-chat agent message also emits a level-1 💡 event (free-form notification). An agent reply clears the target's derived `owed`. |
 | `POST /api/feedback` | `{target, text}` | human → agent: appends to the thread and queues a durable `message` feedback. The latest-message-is-the-user's rule flips the target's derived `owed` (the UI's "agent owes you a reply" balloon; owed unanswered past ~180s renders as "may be stuck", derived client-side). |
-| `POST /api/notifications/read` | `{user?, seqs?[], all?}` | persist notification read state |
+| `POST /api/notifications/read` | `{user?, seqs?[], all?}` | persist notification read state. `all` also advances the thread read marker of every card with unseen agent replies (clearing is reading — reply items have no seq to mark) |
 | `POST /api/read` | `{user?, target, ts?}` | persist a thread read marker (unread badges) |
 
 ### Feedback queue (at-least-once)

@@ -85,10 +85,25 @@ export function allEvents() {
   out.sort((a, b) => a.seq - b.seq);
   return out;
 }
-export function notifItems() { // level-1 slice, newest first, with read flags
+// the bell: level-1 events UNION agent card-thread replies, newest first, with
+// read flags. Mirrors the server's /api/notifications derivation: reply items
+// carry ts/text/actor/card/cardTitle/read + kind "reply" (no seq — their read
+// state is the thread read marker, so opening the card clears them). Main-chat
+// agent messages ride their own level-1 event, so chat is excluded (no double
+// count); level-2 never notifies.
+export function notifItems() {
   const r = reads();
-  return allEvents().filter((e) => e.level === 1).reverse()
+  const items = allEvents().filter((e) => e.level === 1)
     .map((e) => Object.assign({}, e, { read: e.seq <= r.notifSeq || r.notifSeqs.includes(e.seq) }));
+  for (const c of cards()) {
+    const readTs = threadReadTs('card:' + c.id);
+    for (const m of c.thread || []) {
+      if (m.author === USER) continue;
+      items.push({ ts: m.ts, level: 1, kind: 'reply', text: m.text, actor: m.author,
+        card: c.id, cardTitle: c.title, read: !!readTs && m.ts <= readTs });
+    }
+  }
+  return items.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : (b.seq || 0) - (a.seq || 0)));
 }
 export function notifUnreadCount() { return notifItems().filter((e) => !e.read).length; }
 
