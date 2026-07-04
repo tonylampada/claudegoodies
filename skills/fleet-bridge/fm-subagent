@@ -1,51 +1,68 @@
 #!/usr/bin/env node
-// fm-subagent — maintain a firstmate home's subagent-delegate registry, the
-// small file fm-board-sync reads to feed worker stripes for firstmate's own
-// direct subagent-delegates. Node built-ins only, zero deps. Firstmate-owned;
-// lives in the gitignored home state/, never in a project.
+// fm-subagent — maintain a firstmate home's subagent-delegate registry AND its
+// board lease. Harness subagents have no on-disk task files, so this registry
+// is their evidence source: `set` immediately asserts a status.set worker lease
+// (worker id = agent id, state as given) on the linked card and records the
+// entry so fm-board-sync re-asserts the lease each run while registered;
+// `clear` unlinks (status.set with worker null) and removes the entry.
+// Node built-ins only, zero deps. Firstmate-owned; lives in the gitignored home
+// state/, never in a project.
 //
 // Registry file: <home>/state/subagents.json
 //   { "<agent-id>": { "card": "<card-id>", "state": "working|idle|needs-you" } }
-// Each entry means "this subagent RIDES this existing board card": fm-board-sync
-// feeds worker=<state> onto that card (the registry outranks alias and crew-task
-// worker sources). Absent file = no subagents. An unreadable/corrupt file is
-// treated as empty rather than fatal, and a mutating command rewrites it clean.
+// Each entry means "this subagent RIDES this existing board card". Absent file
+// = no subagents. An unreadable/corrupt file is treated as empty rather than
+// fatal, and a mutating command rewrites it clean.
+//
+// The registry write always lands even when the board is unreachable (the next
+// fm-board-sync run re-asserts the lease); a failed status.set is a warning,
+// never a lost registration.
 //
 // Usage:
-//   fm-subagent [--home <path>] set <agent-id> --card <card-id> --state <working|idle|needs-you>
-//   fm-subagent [--home <path>] clear <agent-id>
+//   fm-subagent [--home <path>] [--port <p>] [--board <name>]
+//               set <agent-id> --card <card-id> --state <working|idle|needs-you>
+//   fm-subagent [--home <path>] [--port <p>] [--board <name>] clear <agent-id>
 //   fm-subagent [--home <path>] list
 // --home defaults to $FM_HOME or the current directory (same as fm-board-sync).
-// Writes are atomic (tmp file + rename).
+// Writes are atomic (tmp file + rename). Lease ttl: FM_SYNC_WORKER_TTL_SECS
+// (default 600), the same knob fm-board-sync uses.
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 
 function die(msg) { process.stderr.write('fm-subagent: ' + msg + '\n'); process.exit(2); }
+function warn(msg) { process.stderr.write('fm-subagent: ' + msg + '\n'); }
 
 const VALID_STATES = new Set(['working', 'idle', 'needs-you']);
 
 // ---------- args ----------
 const argv = process.argv.slice(2);
-const opts = { home: process.env.FM_HOME || process.cwd(), card: null, state: null };
+const opts = {
+  home: process.env.FM_HOME || process.cwd(),
+  card: null, state: null, port: 4777, board: 'default',
+};
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--home') opts.home = argv[++i];
   else if (a === '--card') opts.card = argv[++i];
   else if (a === '--state') opts.state = argv[++i];
+  else if (a === '--port') opts.port = parseInt(argv[++i], 10);
+  else if (a === '--board') opts.board = argv[++i];
   else if (a === '-h' || a === '--help') { usage(); process.exit(0); }
   else if (a.startsWith('-')) die('unknown option: ' + a);
   else positional.push(a);
 }
 const cmd = positional.shift();
+const BASE = 'http://127.0.0.1:' + opts.port;
 
 function usage() {
   process.stdout.write(
     'usage:\n' +
-    '  fm-subagent [--home <path>] set <agent-id> --card <card-id> --state <working|idle|needs-you>\n' +
-    '  fm-subagent [--home <path>] clear <agent-id>\n' +
+    '  fm-subagent [--home <path>] [--port <p>] [--board <name>] set <agent-id> --card <card-id> --state <working|idle|needs-you>\n' +
+    '  fm-subagent [--home <path>] [--port <p>] [--board <name>] clear <agent-id>\n' +
     '  fm-subagent [--home <path>] list\n');
 }
 
@@ -58,7 +75,7 @@ function readRegistry() {
   try { src = fs.readFileSync(REG_FILE, 'utf8'); } catch (e) { return {}; }
   let obj;
   try { obj = JSON.parse(src); } catch (e) {
-    process.stderr.write('fm-subagent: corrupt ' + REG_FILE + ' (treated as empty)\n');
+    warn('corrupt ' + REG_FILE + ' (treated as empty)');
     return {};
   }
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
@@ -74,39 +91,89 @@ function writeRegistry(obj) {
   fs.renameSync(tmp, REG_FILE);
 }
 
-// ---------- commands ----------
-if (cmd === 'set') {
-  const agentId = positional.shift();
-  if (!agentId) die('set: missing <agent-id>');
-  if (!opts.card) die('set: --card is required');
-  if (!opts.state) die('set: --state is required');
-  if (!VALID_STATES.has(opts.state)) die('set: bad --state "' + opts.state + '" (use working|idle|needs-you)');
-  const reg = readRegistry();
-  reg[agentId] = { card: opts.card, state: opts.state };
-  writeRegistry(reg);
-  process.stdout.write('set ' + agentId + ' -> card ' + opts.card + ' state ' + opts.state + '\n');
-} else if (cmd === 'clear') {
-  const agentId = positional.shift();
-  if (!agentId) die('clear: missing <agent-id>');
-  const reg = readRegistry();
-  if (Object.prototype.hasOwnProperty.call(reg, agentId)) {
-    delete reg[agentId];
-    writeRegistry(reg);
-    process.stdout.write('cleared ' + agentId + '\n');
-  } else {
-    process.stdout.write('no such entry: ' + agentId + '\n');
-  }
-} else if (cmd === 'list') {
-  const reg = readRegistry();
-  const ids = Object.keys(reg).sort();
-  if (!ids.length) { process.stdout.write('(no subagents)\n'); }
-  else {
-    for (const id of ids) {
-      const e = reg[id] || {};
-      process.stdout.write(id + '  card=' + (e.card || '?') + '  state=' + (e.state || '?') + '\n');
-    }
-  }
-} else {
-  usage();
-  process.exit(cmd ? 2 : 0);
+// ---------- board lease (status.set) ----------
+function envTtl() {
+  const v = parseFloat(process.env.FM_SYNC_WORKER_TTL_SECS);
+  return Number.isFinite(v) && v > 0 ? v : 600;
 }
+function request(method, urlPath, body) {
+  return new Promise((resolve, reject) => {
+    const data = body == null ? null : JSON.stringify(body);
+    const req = http.request(BASE + urlPath, {
+      method,
+      headers: data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {},
+      timeout: 10000,
+    }, (res) => {
+      let out = '';
+      res.on('data', (c) => (out += c));
+      res.on('end', () => {
+        if (res.statusCode >= 400) return reject(new Error('HTTP ' + res.statusCode + ' ' + urlPath + ': ' + out));
+        try { resolve(JSON.parse(out)); } catch (e) { resolve(out); }
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+// Best-effort status.set: warn on failure (unreachable server, wrong board,
+// missing card), never fatal — the registry is the durable record and
+// fm-board-sync re-asserts from it.
+async function setLease(cardId, worker) {
+  try {
+    const st = await request('GET', '/api/status');
+    if (st && st.board && st.board !== opts.board) {
+      warn('server on port ' + opts.port + ' serves board "' + st.board + '", not "' + opts.board + '" — lease not set');
+      return;
+    }
+    await request('POST', '/api/cards/' + encodeURIComponent(cardId) + '/status',
+      { worker, ttl: envTtl() });
+  } catch (e) {
+    warn('status.set on card ' + cardId + ' failed: ' + e.message + ' (fm-board-sync will re-assert)');
+  }
+}
+
+// ---------- commands ----------
+async function main() {
+  if (cmd === 'set') {
+    const agentId = positional.shift();
+    if (!agentId) die('set: missing <agent-id>');
+    if (!opts.card) die('set: --card is required');
+    if (!opts.state) die('set: --state is required');
+    if (!VALID_STATES.has(opts.state)) die('set: bad --state "' + opts.state + '" (use working|idle|needs-you)');
+    const reg = readRegistry();
+    reg[agentId] = { card: opts.card, state: opts.state };
+    writeRegistry(reg);
+    await setLease(opts.card, { id: agentId, state: opts.state });
+    process.stdout.write('set ' + agentId + ' -> card ' + opts.card + ' state ' + opts.state + '\n');
+  } else if (cmd === 'clear') {
+    const agentId = positional.shift();
+    if (!agentId) die('clear: missing <agent-id>');
+    const reg = readRegistry();
+    if (Object.prototype.hasOwnProperty.call(reg, agentId)) {
+      const ent = reg[agentId];
+      delete reg[agentId];
+      writeRegistry(reg);
+      if (ent && typeof ent.card === 'string' && ent.card) await setLease(ent.card, null);
+      process.stdout.write('cleared ' + agentId + '\n');
+    } else {
+      process.stdout.write('no such entry: ' + agentId + '\n');
+    }
+  } else if (cmd === 'list') {
+    const reg = readRegistry();
+    const ids = Object.keys(reg).sort();
+    if (!ids.length) { process.stdout.write('(no subagents)\n'); }
+    else {
+      for (const id of ids) {
+        const e = reg[id] || {};
+        process.stdout.write(id + '  card=' + (e.card || '?') + '  state=' + (e.state || '?') + '\n');
+      }
+    }
+  } else {
+    usage();
+    process.exit(cmd ? 2 : 0);
+  }
+}
+
+main().catch((e) => { warn(e.message); process.exit(1); });

@@ -1,37 +1,50 @@
 #!/usr/bin/env node
-// fm-board-sync — event/attribute FEEDER from a firstmate home's on-disk state
-// onto a bridge v2 board. Node built-ins only, zero deps. Never writes to the
-// firstmate home; never moves columns; never touches title/body/labels of
-// existing cards. Column moves are deliberate lifecycle acts of the agent or
-// the human — this generator only feeds.
+// fm-board-sync — Loop B evidence feeder from a firstmate home's on-disk state
+// onto a bridge board. Node built-ins only, zero deps. Never writes to the
+// firstmate home; calls exactly the DNA sync operations and nothing else:
+//
+//   event.append          timeline events for detected signals (deduped by text)
+//   card.patch            prs / artifacts attribute updates
+//   status.set            the worker lease (evidence-based, single writer)
+//   card.archive(merged)  when a task lands in backlog Done with verb "merged"
+//   card.move             NEVER (invariant 3: sync feeds, never moves)
 //
 // What it does per run:
 //   1. Ensures the canonical 4-column frame (PUT /api/columns, idempotent).
 //   2. Creates cards for NEW in-flight work (backlog In flight + live state/*.meta),
-//      born in "working" with type/repo/owner attributes and a seed body.
+//      born in "working" with type/repo/owner attributes and a seed body. On birth,
+//      a data/<task-id>/brief.md in the home is attached as a {uri, label} entry in
+//      the `artifacts` list attribute; artifacts are additive only (append missing
+//      entries, never overwrite an existing list).
 //   3. Appends timeline events for detected signals, deduped by exact text:
 //        - "PR opened <url>" when meta records pr=          (level 2)
 //        - status-file lines: done/failed/needs-decision/blocked -> level 1
 //          (success/alert/question/alert), other lines -> level 2
-//   4. Patches pr / pr_state attributes when they change.
-//   5. Feeds the `worker` attribute (the UI's left-edge stripe) from REAL
-//      crewmate state: busy pane -> working, parked on needs-decision/blocked
-//      -> needs-you, alive-but-idle window -> idle, dead/no window -> cleared
-//      (attribute removed, no stripe). Derived from state/<id>.meta +
-//      state/<id>.status + one batched tmux window list + bounded per-task
-//      pane captures — never from fm-crew-state.sh (which shells out to
-//      no-mistakes with multi-second timeouts per task; too slow for a
-//      run-on-every-wake feeder). Firstmate's own subagent-delegates also feed
-//      the stripe: state/subagents.json entries RIDE their linked card (see
-//      fm-subagent), and the registry outranks alias and crew-task sources.
-//      Worker priority per card, highest first: registry > alias > crew task.
-//   6. Archives a card when its task lands in backlog Done with verb "merged"
-//      (kill = archive; the card leaves the board, one level-1 ✅ notification).
+//   4. Maintains the `prs` list attribute: [{url, state: open|merged|closed}]
+//      from the task meta's recorded PR (open) and backlog Done verbs (merged).
+//      Cards still carrying the old `pr`/`pr_state` attributes are migrated:
+//      folded into `prs`, old keys deleted (PATCH value null deletes).
+//   5. Asserts the worker lease via status.set — EVIDENCE-BASED, never sampled
+//      from screen panes. Per linked task (aliases + task-id match):
+//        - last state/<id>.status line starts needs-decision:/blocked: -> needs-you
+//        - else recent activity (mtime of state/<id>.status or
+//          state/<id>.turn-ended within FM_SYNC_FRESH_SECS, default 600) -> working
+//        - else task meta still exists -> idle
+//        - task meta gone (torn down) -> one status.set with worker null (the
+//          unlink), then stop asserting
+//      The lease is re-asserted every run with ttl FM_SYNC_WORKER_TTL_SECS
+//      (default 600, 2x the default sync cadence); server-side decay covers a
+//      dead feeder honestly. The `worker` attribute is never written.
+//      Firstmate's own subagent-delegates also hold leases: state/subagents.json
+//      entries RIDE their linked card (see fm-subagent) with worker id = agent id.
+//      Lease priority per card, highest first: registry > alias > crew task.
+//   6. Archives a card when its task lands in backlog Done with verb "merged":
+//      card.archive with reason enum "merged" (plus the PR url / "local main"
+//      as note). Nothing else ever removes a card.
 //
 // Aliases: <home>/data/board-aliases lines "<task-id> <card-id>" feed a task's
-// events/attributes onto an existing card (e.g. a captain-created card that
-// became real work, or a follow-up task amending an earlier card) instead of
-// creating a new one.
+// events/attributes/lease onto an existing card (e.g. a captain-created card
+// that became real work) instead of creating a new one.
 //
 // Usage:
 //   fm-board-sync [--home <path>] [--owner <name>] [--no-secondmates]
@@ -42,7 +55,6 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { execFileSync } = require('child_process');
 
 function warn(msg) { process.stderr.write('fm-board-sync: ' + msg + '\n'); }
 
@@ -68,6 +80,16 @@ for (let i = 0; i < argv.length; i++) {
 }
 const BASE = 'http://127.0.0.1:' + opts.port;
 
+// ---------- evidence-policy knobs ----------
+function envSecs(name, dflt, min) {
+  const v = parseFloat(process.env[name]);
+  return Number.isFinite(v) && v >= min ? v : dflt;
+}
+// Activity within this window counts as "working" evidence (0 = nothing is fresh).
+const FRESH_SECS = envSecs('FM_SYNC_FRESH_SECS', 600, 0);
+// Worker lease ttl; the feeder re-asserts every run, decay covers a dead feeder.
+const WORKER_TTL_SECS = envSecs('FM_SYNC_WORKER_TTL_SECS', 600, 0.001);
+
 // ---------- canonical column frame (skill-owned) ----------
 const COLUMNS = [
   { id: 'ideas', title: '💡 Ideas' },
@@ -80,6 +102,9 @@ const BIRTH_COLUMN = 'working'; // new detected work is already being worked
 // ---------- helpers ----------
 function readFileSafe(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch (e) { return null; }
+}
+function mtimeMs(file) {
+  try { return fs.statSync(file).mtimeMs; } catch (e) { return null; }
 }
 function trimTrailingParen(text) {
   return text.replace(/\s*\([^()]*\)\s*$/, '').trim();
@@ -122,7 +147,7 @@ function parseBacklog(file) {
 
 // ---------- meta / status parsing ----------
 function parseMetas(stateDir) {
-  const metas = new Map(); // id -> {kind, project, window, backend, prs[]}
+  const metas = new Map(); // id -> {kind, project, prs[]}
   let names;
   try { names = fs.readdirSync(stateDir).filter((n) => n.endsWith('.meta')).sort(); }
   catch (e) { return metas; }
@@ -130,7 +155,7 @@ function parseMetas(stateDir) {
     const id = name.slice(0, -'.meta'.length);
     const src = readFileSafe(path.join(stateDir, name));
     if (src == null) continue;
-    const m = { kind: null, project: null, window: null, backend: null, prs: [] };
+    const m = { kind: null, project: null, prs: [] };
     for (const line of src.split('\n')) {
       const kv = /^(\w+)=(.*)$/.exec(line.trim());
       if (!kv) continue;
@@ -156,74 +181,73 @@ function classifyStatusLine(line) {
   return { level: 2, kind: 'info' };
 }
 
-// ---------- worker state (the card's left-edge stripe) ----------
-// Derived from meta + status files + tmux, NOT from fm-crew-state.sh: that
-// helper shells out to no-mistakes with a multi-second timeout per task, which
-// is too slow for a feeder that runs on every wake. tmux cost is bounded to
-// ONE `list-windows -a` per run plus at most MAX_PANE_PROBES `capture-pane`
-// calls (only for tasks whose window is live).
-const MAX_PANE_PROBES = 40;
-let panesProbed = 0;
-// Busy footers per harness (mirrors firstmate's fm-tmux-lib.sh):
-// claude/codex "esc to interrupt", opencode "esc interrupt", pi "Working...",
-// grok "Ctrl+c:cancel".
-const BUSY_RE = /esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel/i;
-
-function tmuxExec(args) {
-  try {
-    return execFileSync('tmux', args, { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch (e) { return null; }
-}
-// One batched liveness read; a failure (no tmux, no server) means no live
-// windows, which correctly clears every stripe.
-let liveWindowsCache = null;
-function liveWindows() {
-  if (liveWindowsCache) return liveWindowsCache;
-  const full = new Set(); const bare = new Set();
-  const out = tmuxExec(['list-windows', '-a', '-F', '#{session_name}:#{window_name}']);
-  if (out != null) {
-    for (const line of out.split('\n')) {
-      const t = line.trim();
-      if (!t) continue;
-      full.add(t);
-      bare.add(t.slice(t.indexOf(':') + 1));
-    }
-  }
-  liveWindowsCache = { full, bare };
-  return liveWindowsCache;
-}
-function windowIsLive(target) {
-  const lw = liveWindows();
-  const base = target.replace(/\.\d+$/, ''); // tolerate a pane suffix
-  return lw.full.has(target) || lw.full.has(base) ||
-    (!base.includes(':') && lw.bare.has(base));
-}
-function paneIsBusy(target) {
-  if (panesProbed >= MAX_PANE_PROBES) return null; // budget spent: unknown
-  panesProbed++;
-  const out = tmuxExec(['capture-pane', '-p', '-t', target, '-S', '-40']);
-  if (out == null) return null;
-  const tail = out.split('\n').filter((l) => l.trim()).slice(-6).join('\n');
-  return BUSY_RE.test(tail);
-}
-// Leading verb of the last non-empty status line ("needs-decision: x" -> "needs-decision").
+// ---------- worker lease evidence ----------
+// The lease is derived from on-disk EVIDENCE only — status lines and turn-end
+// activity — never from screen/pane sampling. Returns {id, state} for a live
+// task, or null for a torn-down one (meta gone: unlink).
 function lastStatusVerb(statusLines) {
   if (!statusLines.length) return null;
   const line = statusLines[statusLines.length - 1];
   return line.split(':')[0].trim().toLowerCase();
 }
-// -> 'working' | 'needs-you' | 'idle' | null (clear: no live worker) |
-//    undefined (unreadable here — leave the attribute untouched)
-function workerState(m, statusLines) {
-  if (!m || !m.window) return null;                 // never spawned / torn down
-  if (m.backend && m.backend !== 'tmux') return undefined; // non-tmux backend: no cheap read
-  if (!windowIsLive(m.window)) return null;         // dead window: no stripe
-  const busy = paneIsBusy(m.window);
-  if (busy === null && panesProbed >= MAX_PANE_PROBES) return undefined; // over budget
-  if (busy) return 'working';                       // actively producing
+function workerEvidence(stateDir, taskId, meta, statusLines) {
+  if (!meta) return null; // torn down: unlink
   const verb = lastStatusVerb(statusLines);
-  if (verb === 'needs-decision' || verb === 'blocked') return 'needs-you';
-  return 'idle';                                    // alive but parked
+  if (verb === 'needs-decision' || verb === 'blocked') return { id: taskId, state: 'needs-you' };
+  const cutoff = Date.now() - FRESH_SECS * 1000;
+  for (const f of [taskId + '.status', taskId + '.turn-ended']) {
+    const m = mtimeMs(path.join(stateDir, f));
+    if (m != null && m >= cutoff) return { id: taskId, state: 'working' };
+  }
+  return { id: taskId, state: 'idle' }; // alive but no recent activity
+}
+
+// ---------- prs list: [{url, state: open|merged|closed}] ----------
+const PR_STATES = new Set(['open', 'merged', 'closed']);
+function normalizePrs(list) {
+  const out = [];
+  if (!Array.isArray(list)) return out;
+  for (const e of list) {
+    if (!e || typeof e !== 'object' || typeof e.url !== 'string' || !e.url) continue;
+    if (out.some((x) => x.url === e.url)) continue;
+    out.push({ url: e.url, state: PR_STATES.has(e.state) ? e.state : 'open' });
+  }
+  return out;
+}
+// Merge PR facts into a card's prs attribute; folds the old pr/pr_state pair in
+// and deletes those keys (migration). addOpen: urls known open (task meta);
+// markMerged: urls known merged (backlog Done). Emits at most one attrs patch.
+function planPrs(id, card, addOpen, markMerged, plan) {
+  const at = card.attributes || {};
+  const legacy = ('pr' in at) || ('pr_state' in at);
+  if (!legacy && !addOpen.length && !markMerged.length) return;
+  const prs = normalizePrs(at.prs);
+  if (legacy && typeof at.pr === 'string' && at.pr && !prs.some((e) => e.url === at.pr)) {
+    prs.push({ url: at.pr, state: PR_STATES.has(at.pr_state) ? at.pr_state : 'open' });
+  }
+  for (const url of addOpen) {
+    if (!prs.some((e) => e.url === url)) prs.push({ url, state: 'open' });
+  }
+  for (const url of markMerged) {
+    const e = prs.find((x) => x.url === url);
+    if (e) e.state = 'merged';
+    else prs.push({ url, state: 'merged' });
+  }
+  if (card._new) { if (prs.length) card.attributes.prs = prs; return; }
+  if (!legacy && JSON.stringify(prs) === JSON.stringify(normalizePrs(at.prs))) return;
+  const attributes = { prs };
+  if (legacy) { attributes.pr = null; attributes.pr_state = null; } // null deletes
+  plan.attrs.push({ card: id, attributes });
+}
+
+// ---------- artifacts: [{uri, label}] — additive only ----------
+function planArtifact(id, card, uri, label, plan) {
+  const at = card.attributes || {};
+  const list = Array.isArray(at.artifacts) ? at.artifacts.slice() : [];
+  if (list.some((a) => a && a.uri === uri)) return;
+  list.push({ uri, label });
+  if (card._new) { card.attributes.artifacts = list; return; }
+  plan.attrs.push({ card: id, attributes: { artifacts: list } });
 }
 
 // ---------- aliases: "<task-id> <card-id>" ----------
@@ -244,13 +268,15 @@ function parseAliases(file) {
 // ---------- subagent registry: state/subagents.json ----------
 // { "<agent-id>": { "card": "<card-id>", "state": "working|idle|needs-you" } }
 // Firstmate's direct subagent-delegates RIDE the card they are linked to (they
-// have no card of their own): the registry feeds worker=<state> onto that card,
-// exactly like crewmate state. Absent, unreadable, or corrupt file => empty (no
-// subagents), never fatal. Returns Map<cardId, state> (the only shape the feeder
-// needs), dropping entries with an unknown state or missing card.
+// have no card of their own): the registry asserts a status.set lease with
+// worker id = agent id onto that card, re-asserted here every run while
+// registered (fm-subagent writes the entry and fires the first status.set).
+// Absent, unreadable, or corrupt file => empty (no subagents), never fatal.
+// Returns Map<cardId, {id, state}>, dropping entries with an unknown state or
+// missing card.
 const SUBAGENT_STATES = new Set(['working', 'idle', 'needs-you']);
 function parseSubagents(file) {
-  const map = new Map(); // cardId -> state
+  const map = new Map(); // cardId -> {id: agentId, state}
   const src = readFileSafe(file);
   if (src == null) return map;
   let obj;
@@ -262,9 +288,9 @@ function parseSubagents(file) {
     const state = ent.state;
     if (typeof card !== 'string' || !card) continue;
     if (!SUBAGENT_STATES.has(state)) { warn('subagent ' + agentId + ': bad state "' + state + '" (skipped)'); continue; }
-    // Last writer wins if two agents ride the same card (feedWorker is idempotent
-    // per card anyway; this just keeps the map single-valued).
-    map.set(card, state);
+    // Last writer wins if two agents ride the same card (the lease is decided
+    // once per card anyway; this just keeps the map single-valued).
+    map.set(card, { id: agentId, state });
   }
   return map;
 }
@@ -283,46 +309,42 @@ function parseSecondmates(file) {
 
 // ---------- plan for one home ----------
 // Emits {creates:[card], events:[{card,text,level,kind}], attrs:[{card,attributes}],
-//        archives:[{card,reason}], workerDecided:Set<cardId>} against the board
-// snapshot. workerDecided = cards whose worker stripe this home owns this run
-// (set, cleared, or deliberately left alone); main() clears the stripe on any
-// other owned card that still carries one.
+//        statuses:[{card,worker}], archives:[{card,reason,note}],
+//        statusDecided:Set<cardId>, prsDecided:Set<cardId>} against the board
+// snapshot. statusDecided = cards whose worker lease this home owns this run;
+// main() unlinks any other owned card that still shows a linked worker.
 function planHome(home, owner, board) {
   const backlog = parseBacklog(path.join(home, 'data', 'backlog.md'));
   const stateDir = path.join(home, 'state');
   const metas = parseMetas(stateDir);
   const aliases = parseAliases(path.join(home, 'data', 'board-aliases'));
   const subagents = parseSubagents(path.join(stateDir, 'subagents.json'));
-  const plan = { creates: [], events: [], attrs: [], archives: [], workerDecided: new Set() };
+  const plan = {
+    creates: [], events: [], attrs: [], statuses: [], archives: [],
+    statusDecided: new Set(), prsDecided: new Set(),
+  };
 
   const cardId = (taskId) =>
     aliases.get(taskId) || (owner === 'firstmate' ? taskId : owner + ':' + taskId);
   const boardCard = (id) => (board.cards || []).find((c) => c.id === id);
 
-  // A card that is an ALIAS TARGET is owned, for worker purposes, by the
-  // aliasing (rework) task alone. An alias line "<rework-task> <card-id>" means
-  // the rework task rides that existing card; the aliasing task's live window is
-  // authoritative. A different, same-named ORIGINAL task (e.g. the torn-down
-  // task the card was born from) must NOT also feed worker onto that card, or
-  // the two sources fight per run and the stripe flickers idle <-> gone. Cards
-  // reached only via the default id mapping (not an alias) are unaffected.
-  const aliasTargetCards = new Set(aliases.values());
-
-  // Feed the worker stripe for one card, deterministically: at most ONE worker
-  // decision per card per run. `card` may be null (no board card and not being
-  // created): nothing to feed then. undefined state = leave as-is, but still
-  // ours (protects it from the stale-worker sweep in main()). A second attempt
-  // to decide the same card in one run is ignored (the first, authoritative
-  // source wins); callers order the authoritative source first.
-  const feedWorker = (id, card, w) => {
-    if (plan.workerDecided.has(id)) return; // already decided this run — no double-write
-    plan.workerDecided.add(id);
-    if (w === undefined || !card) return;
-    const cur = (card.attributes || {}).worker;
-    if (card._new) { if (w) card.attributes.worker = w; return; }
-    if (w === null ? cur != null : cur !== w) {
-      plan.attrs.push({ card: id, attributes: { worker: w } }); // null deletes on PATCH
+  // Assert the worker lease for one card, deterministically: at most ONE lease
+  // decision per card per run. worker = {id, state} re-asserts the lease (every
+  // run — that is the refresh that keeps a live lease from decaying); worker =
+  // null unlinks, but only when the board still shows a linked worker, so a
+  // torn-down task unlinks ONCE and then stops asserting. A second attempt to
+  // decide the same card in one run is ignored (the first, authoritative source
+  // wins); callers order the authoritative source first.
+  const feedStatus = (id, card, worker) => {
+    if (plan.statusDecided.has(id)) return; // already decided this run
+    plan.statusDecided.add(id);
+    if (!card) return; // no card on the board (and none being created)
+    if (worker == null) {
+      const w = card.status && card.status.worker;
+      if (!card._new && w && w.id) plan.statuses.push({ card: id, worker: null });
+      return;
     }
+    plan.statuses.push({ card: id, worker });
   };
 
   // live tasks = in-flight backlog items U live metas (minus secondmate self-records)
@@ -341,48 +363,42 @@ function planHome(home, owner, board) {
     live.set(id, t);
   }
 
-  // Worker priority, highest first: REGISTRY (firstmate's subagent-delegates) >
-  // ALIAS (rework task riding a card) > CREW TASK (crewmate/secondmate window).
-  // Each source is decided before the next, and feedWorker() is idempotent per
+  // Lease priority, highest first: REGISTRY (firstmate's subagent-delegates) >
+  // ALIAS (rework task riding a card) > CREW TASK (crewmate/secondmate task).
+  // Each source is decided before the next, and feedStatus() is idempotent per
   // card, so the highest-priority source wins with no double-write.
   //
-  // 1) REGISTRY first: a subagent rides its linked card. The registry owns that
-  //    card's stripe outright — a crew-task worker computation and the main()
-  //    stale-sweep must never clobber or clear it (workerDecided marks it ours).
-  //    Ride only an existing board card: never mint a card here (captain: "ride
-  //    the linked card"). A card the registry no longer names falls back to the
-  //    normal alias/crew computation next run, which for a taskless subagent card
-  //    is null (clear) — so clearing an entry clears the stripe cleanly.
-  for (const [cardIdName, state] of subagents) {
+  // 1) REGISTRY first: a subagent rides its linked card outright — a crew-task
+  //    lease computation and the main() unlink sweep must never clobber or clear
+  //    it (statusDecided marks it ours). Ride only an existing board card: never
+  //    mint a card here. A card the registry no longer names falls back to the
+  //    normal alias/crew computation next run, which for a taskless subagent
+  //    card is an unlink — so clearing an entry clears the lease cleanly.
+  for (const [cardIdName, worker] of subagents) {
     const card = boardCard(cardIdName);
     if (!card) continue; // linked card not on the board: skip, don't mint
-    feedWorker(cardIdName, card, state);
+    feedStatus(cardIdName, card, worker);
   }
 
-  // 2) ALIAS next: the aliasing (rework) task is the
-  // authoritative source for an alias-target card, before any same-named
-  // original task (whose torn-down window would otherwise clear that card).
-  // feedWorker() is idempotent per card, so the first (alias) decision wins and
-  // the original task's later attempt on the same card is a no-op. A task
-  // reaching a card by the default id mapping (not through an alias) is not
-  // pre-decided here, so non-aliased cards behave exactly as before.
+  // 2) ALIAS next: the aliasing (rework) task is the authoritative source for
+  // an alias-target card, before any same-named original task (whose torn-down
+  // meta would otherwise unlink that card). feedStatus() is idempotent per card,
+  // so the first (alias) decision wins. A task reaching a card by the default id
+  // mapping (not through an alias) is not pre-decided here.
   for (const [taskId, targetCard] of aliases) {
     const m = metas.get(taskId);
     if (!m) continue; // alias to a task with no meta: nothing live to feed
     const card = boardCard(targetCard);
     if (!card) continue; // alias target not on the board yet (created below if it is live work)
-    feedWorker(targetCard, card, workerState(m, parseStatus(stateDir, taskId)));
+    feedStatus(targetCard, card, workerEvidence(stateDir, taskId, m, parseStatus(stateDir, taskId)));
   }
 
   // Secondmate self-records create no card, but a card may exist for one (alias
-  // or direct id); feed its worker stripe from the live pane. The alias-first
-  // loop above already covered any secondmate task used as an alias source, and
-  // feedWorker() is idempotent, so this only fills self-record cards not yet
-  // decided.
+  // or direct id); assert its lease from the same evidence policy.
   for (const [id, m] of metas) {
     if (m.kind !== 'secondmate') continue;
     const cid = cardId(id);
-    feedWorker(cid, boardCard(cid), workerState(m, parseStatus(stateDir, id)));
+    feedStatus(cid, boardCard(cid), workerEvidence(stateDir, id, m, parseStatus(stateDir, id)));
   }
 
   // pending events/attrs for a card id, deduped later against board card events
@@ -408,15 +424,15 @@ function planHome(home, owner, board) {
       plan.events.push({ card: id, text, level, kind });
     };
 
-    // PR recorded in meta -> attribute + one "PR opened" event
+    // PR recorded in meta -> prs list entry (open) + one "PR opened" event
     const m = metas.get(taskId);
-    if (m && m.prs.length) {
-      const pr = m.prs[m.prs.length - 1];
-      const at = (card.attributes) || {};
-      if (at.pr !== pr && !card._new) plan.attrs.push({ card: id, attributes: { pr, pr_state: 'open' } });
-      else if (card._new) { card.attributes.pr = pr; card.attributes.pr_state = 'open'; }
-      addEvent('PR opened: ' + pr, 2, 'info');
-    }
+    planPrs(id, card, m ? m.prs : [], [], plan);
+    plan.prsDecided.add(id);
+    if (m && m.prs.length) addEvent('PR opened: ' + m.prs[m.prs.length - 1], 2, 'info');
+
+    // brief artifact: attach the worker brief when the home has one
+    const brief = path.join(home, 'data', taskId, 'brief.md');
+    if (fs.existsSync(brief)) planArtifact(id, card, 'file://' + brief, 'worker brief', plan);
 
     // status-file lines -> timeline events
     const statusLines = parseStatus(stateDir, taskId);
@@ -425,18 +441,20 @@ function planHome(home, owner, board) {
       addEvent(line, c.level, c.kind);
     }
 
-    // worker stripe from real crewmate state (set when changed, clear when gone)
-    feedWorker(id, card, workerState(m, statusLines));
+    // worker lease from evidence (re-asserted when live, unlinked when gone)
+    feedStatus(id, card, workerEvidence(stateDir, taskId, m, statusLines));
   }
 
-  // merged Done entries -> archive the card (kill = off the board)
+  // merged Done entries -> mark the PR merged, archive the card (reason enum)
   for (const it of backlog.done) {
     if ((it.verb || '') !== 'merged') continue;
     const id = cardId(it.id);
     const card = boardCard(id);
     if (!card) continue; // already archived / never on the board
-    const where = it.url && /^https?:\/\//.test(it.url) ? it.url : 'local main';
-    plan.archives.push({ card: id, reason: 'merged: ' + where });
+    const isUrl = it.url && /^https?:\/\//.test(it.url);
+    planPrs(id, card, [], isUrl ? [it.url] : [], plan);
+    plan.prsDecided.add(id);
+    plan.archives.push({ card: id, reason: 'merged', note: isUrl ? it.url : 'local main' });
   }
 
   return plan;
@@ -472,7 +490,6 @@ async function main() {
 
   // A server serves one board fixed at launch; verify before feeding anything.
   let board = { cards: [] };
-  let serverOk = false;
   try {
     const st = await request('GET', '/api/status');
     if (st && st.board && st.board !== opts.board) {
@@ -480,42 +497,53 @@ async function main() {
       process.exit(1);
     }
     board = await request('GET', '/api/board');
-    serverOk = true;
   } catch (e) {
     warn('server not reachable on port ' + opts.port + ': ' + e.message + (opts.apply ? '' : ' (planning against empty board)'));
     if (opts.apply) process.exit(1);
   }
 
   // merge plans across the main home and each secondmate home
-  const plan = { columns: COLUMNS, creates: [], events: [], attrs: [], archives: [] };
+  const plan = { columns: COLUMNS, creates: [], events: [], attrs: [], statuses: [], archives: [] };
   const homes = [{ home, owner: opts.owner }];
   if (opts.secondmates) {
     for (const sm of parseSecondmates(path.join(home, 'data', 'secondmates.md'))) {
       if (!fs.existsSync(sm.home)) { warn('secondmate home missing: ' + sm.home + ' (skipped)'); continue; }
-      homes.push({ home: sm.home, owner: sm.id });
+      homes.push({ home: path.resolve(sm.home), owner: sm.id });
     }
   }
-  const workerDecided = new Set();
+  const statusDecided = new Set();
+  const prsDecided = new Set();
   for (const h of homes) {
     const p = planHome(h.home, h.owner, board);
     plan.creates.push(...p.creates);
     plan.events.push(...p.events);
     plan.attrs.push(...p.attrs);
+    plan.statuses.push(...p.statuses);
     plan.archives.push(...p.archives);
-    for (const id of p.workerDecided) workerDecided.add(id);
+    for (const id of p.statusDecided) statusDecided.add(id);
+    for (const id of p.prsDecided) prsDecided.add(id);
   }
   for (const c of plan.creates) delete c._new;
 
-  // Stale-worker sweep: a board card still striped whose task no longer exists
-  // in any planned home (meta gone after teardown) gets its stripe cleared.
-  // Scoped to cards owned by the homes we actually planned, so cards of a
-  // skipped home (--no-secondmates, missing home) are never touched.
+  // Unlink sweep: a board card still showing a linked worker whose task no
+  // longer exists in any planned home (meta gone after teardown) gets one
+  // status.set with worker null. Scoped to cards owned by the homes we actually
+  // planned, so cards of a skipped home (--no-secondmates, missing home) are
+  // never touched.
   const plannedOwners = new Set(homes.map((h) => h.owner));
   for (const c of board.cards || []) {
-    const at = c.attributes || {};
-    if (!at.worker || workerDecided.has(c.id)) continue;
-    if (!plannedOwners.has(at.owner)) continue;
-    plan.attrs.push({ card: c.id, attributes: { worker: null } });
+    if (statusDecided.has(c.id)) continue;
+    if (!plannedOwners.has((c.attributes || {}).owner)) continue;
+    const w = c.status && c.status.worker;
+    if (w && w.id) plan.statuses.push({ card: c.id, worker: null });
+  }
+
+  // Migration sweep: owned cards still carrying the old pr/pr_state attributes
+  // but no live task this run (e.g. parked in review) fold them into prs too.
+  for (const c of board.cards || []) {
+    if (prsDecided.has(c.id)) continue;
+    if (!plannedOwners.has((c.attributes || {}).owner)) continue;
+    planPrs(c.id, c, [], [], plan);
   }
 
   if (!opts.apply) {
@@ -523,9 +551,9 @@ async function main() {
     return;
   }
 
-  // apply: columns (idempotent) -> creates -> attrs -> events -> archives
+  // apply: columns (idempotent) -> creates -> attrs -> statuses -> events -> archives
   await request('PUT', '/api/columns', plan.columns);
-  let n = { created: 0, events: 0, attrs: 0, archived: 0 };
+  let n = { created: 0, attrs: 0, statuses: 0, events: 0, archived: 0 };
   for (const c of plan.creates) {
     try { await request('POST', '/api/cards', c); n.created++; }
     catch (e) { warn('create ' + c.id + ' failed: ' + e.message); }
@@ -533,6 +561,13 @@ async function main() {
   for (const a of plan.attrs) {
     try { await request('PATCH', '/api/cards/' + encodeURIComponent(a.card), { attributes: a.attributes }); n.attrs++; }
     catch (e) { warn('attrs ' + a.card + ' failed: ' + e.message); }
+  }
+  for (const st of plan.statuses) {
+    try {
+      await request('POST', '/api/cards/' + encodeURIComponent(st.card) + '/status',
+        { worker: st.worker, ttl: WORKER_TTL_SECS });
+      n.statuses++;
+    } catch (e) { warn('status ' + st.card + ' failed: ' + e.message); }
   }
   for (const ev of plan.events) {
     try {
@@ -542,8 +577,11 @@ async function main() {
     } catch (e) { warn('event ' + ev.card + ' failed: ' + e.message); }
   }
   for (const ar of plan.archives) {
-    try { await request('POST', '/api/cards/' + encodeURIComponent(ar.card) + '/archive', { reason: ar.reason, actor: 'sync' }); n.archived++; }
-    catch (e) { warn('archive ' + ar.card + ' failed: ' + e.message); }
+    try {
+      await request('POST', '/api/cards/' + encodeURIComponent(ar.card) + '/archive',
+        { reason: ar.reason, note: ar.note, actor: 'sync' });
+      n.archived++;
+    } catch (e) { warn('archive ' + ar.card + ' failed: ' + e.message); }
   }
   process.stdout.write(JSON.stringify(n) + '\n');
 }

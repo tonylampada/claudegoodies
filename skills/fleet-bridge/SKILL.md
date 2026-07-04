@@ -42,12 +42,13 @@ The `type` attribute (bridge renders the emoji). Work flows captain → firstmat
 | Type | Emoji | Body deliverable |
 |---|---|---|
 | `plan` | 📋 | the plan to validate |
-| `implementation` | 🔧 | what changes + why; PR as `pr` attribute |
+| `implementation` | 🔧 | what changes + why; PRs in the `prs` attribute |
 | `investigation` | 🔍 | findings (scout report essence) |
 | `discussion` | 💬 | free text; default for captain-created cards |
 
 - Standard attributes: `type`, `repo`, `owner` (`firstmate` or the secondmate id),
-  `pr` + `pr_state` when a PR exists.
+  `prs` (list of `{url, state: open|merged|closed}`) when PRs exist, `artifacts`
+  (list of `{uri, label}`, e.g. the worker brief as `file://...`).
 - The **body is the deliverable**: markdown, rewritten by firstmate to always show
   CURRENT state — it is what the captain reads at handoff. Timeline events carry the
   history; never turn the body into a log.
@@ -87,28 +88,33 @@ board:
   (`bridge-axi patch`), and the captain's retouches stick.
 - **Event appends**, deduped by exact text: `PR opened <url>` (level 2), status-file lines
   (`done:`/`failed:`/`needs-decision:`/`blocked:` → level 1; other lines → level 2).
-- **Attribute updates**: `pr` / `pr_state` when the recorded PR changes.
-- **Worker stripe**: the `worker` attribute (bridge UI's left-edge stripe) is fed from
-  real crewmate state — busy tmux pane → `working`, last status `needs-decision:`/
-  `blocked:` → `needs-you`, live-but-idle window (incl. an idle secondmate) → `idle`,
-  dead/missing window or torn-down task → attribute cleared (no stripe). Derived from
-  `state/<id>.meta` + `state/<id>.status` + one batched `tmux list-windows` and bounded
-  per-task pane captures (never `fm-crew-state.sh`, which is too slow per task for an
-  every-wake feeder). Set when changed, cleared when gone; secondmate-owned cards get
-  it from their own home.
+- **Attribute updates**: the `prs` list (`{url, state}` — meta-recorded PRs `open`,
+  Done-verb `merged` marked before archive) and additive `artifacts` (the worker brief
+  `data/<task-id>/brief.md` as `file://...` — appended if missing, an existing list is
+  never overwritten). Old `pr`/`pr_state` attributes are migrated into `prs` and deleted.
+- **Worker lease via `status.set`** (the bridge UI's left-edge stripe reads
+  `card.status.worker`; the `worker` attribute is never written). Evidence-based only,
+  never screen/pane sampling: last status line `needs-decision:`/`blocked:` →
+  `needs-you`; else recent activity (mtime of `state/<id>.status` or
+  `state/<id>.turn-ended` within `FM_SYNC_FRESH_SECS`, default 600) → `working`; else
+  meta still present → `idle`; meta gone (torn down) → one `status.set` with worker
+  null (the unlink), then no more assertions. The lease is re-asserted every run with
+  ttl `FM_SYNC_WORKER_TTL_SECS` (default 600, 2× the sync cadence): a dead feeder's
+  `working`/`needs-you` decays server-side to an honest `idle`. Worker id = task id;
+  secondmate-owned cards get their lease from their own home's evidence.
   - **Subagent-delegates ride a card**: firstmate's own direct subagent-delegates (no
-    card of their own) feed the stripe onto the card they are linked to. Maintain the
-    registry `state/subagents.json` with `fm-subagent` (this skill dir):
+    on-disk task files) lease the card they are linked to, worker id = agent id.
     `fm-subagent --home <h> set <agent-id> --card <card-id> --state <working|idle|needs-you>`
-    on dispatch, `fm-subagent --home <h> clear <agent-id>` on completion, `list` to
-    inspect. fm-board-sync feeds `worker=<state>` onto the linked card **only if that
-    card already exists** (it rides, never mints). Clearing an entry clears the stripe
-    next sync.
-  - **Worker priority per card, highest wins**: `registry > alias > crew-task`. Exactly
-    one worker decision per card per run — a registry-owned card is never clobbered or
-    cleared by crew-task computation or the stale-sweep.
+    on dispatch asserts the lease immediately AND records `state/subagents.json` so
+    fm-board-sync re-asserts it each run; `clear` unlinks and removes the entry;
+    `list` to inspect. The feeder leases the linked card **only if it already exists**
+    (it rides, never mints).
+  - **Lease priority per card, highest wins**: `registry > alias > crew-task`. Exactly
+    one lease decision per card per run — a registry-owned card is never clobbered or
+    unlinked by crew-task evidence or the unlink sweep.
 - **Merged detection → archive**: a backlog Done entry with verb `merged` archives the
-  card via the API (one ✅ notification). Nothing else ever removes a card.
+  card with reason enum `merged` (the PR url / `local main` rides as `note`; one ✅
+  notification). Nothing else ever removes a card.
 - **NEVER moves columns.** The canonical column frame above lives in the `COLUMNS`
   constant and is pushed idempotently every run.
 
