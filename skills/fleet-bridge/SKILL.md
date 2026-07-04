@@ -1,22 +1,36 @@
 ---
 name: fleet-bridge
-description: How firstmate drives the generic bridge board (claudegoodies/skills/bridge) with its fleet state. Bridge knows nothing about firstmate; this skill owns the mapping.
+description: How firstmate drives the bridge kanban board with its fleet state. Use whenever the captain's board is in operation. Requires the separate generic `bridge` skill (installed by the user); bridge knows nothing about firstmate — this skill owns the mapping.
 ---
 
 # fleet-bridge
 
-With the bridge enabled, you operate THIS way. The system is two loops meeting at you
-(see [docs/api/overview.md](docs/api/overview.md) for the model, and bridge's
-[docs/api/overview.md](../bridge/docs/api/overview.md) for the board itself): Loop A is
-the captain's conversation with you through the board; Loop B is the feeder narrating
-fleet evidence onto cards. Everything mechanical is automated. **You are the one gear
-that cannot be** — the only converter between the loops. The board works exactly as
-well as you play your part, and no better.
+**What this is.** The captain runs a kanban board in his browser — the **bridge** — as
+his main surface for delegation-heavy work: one card per piece of fleet work, columns for
+where it stands, per-card chat threads, a timeline of typed events, a notification bell.
+He glances at it to know what every worker is doing and types into it to steer you. The
+board itself is a separate, generic application shipped as the `bridge` skill (zero-dep
+node server + web UI + `bridge-axi` CLI); it is agent-agnostic and knows NOTHING about
+firstmate. THIS skill is the firstmate side of that pairing: how you keep the board true
+and answer what comes back from it.
+
+The user installs the two skills separately, by name (`bridge` and `fleet-bridge`).
+Reference the bridge only as the installed `bridge` skill — never by a repository path.
+`bridge-axi` and the bridge's own docs live in the installed bridge skill's directory.
+
+The system is two loops meeting at you (see
+[docs/api/overview.md](docs/api/overview.md) for the model, and the bridge skill's own
+`docs/api/overview.md` for the board itself): Loop A is the captain's conversation with
+you through the board; Loop B is the feeder narrating fleet evidence onto cards.
+Everything mechanical is automated. **You are the one gear that cannot be** — the only
+converter between the loops. The board works exactly as well as you play your part, and
+no better.
 
 ## Endpoints
 
-- CLI: `<claudegoodies>/skills/bridge/bridge-axi`, always `--board fleet` (port 4777;
-  binds 0.0.0.0, reachable from the captain's other devices).
+- CLI: `bridge-axi` in the installed `bridge` skill's directory (e.g.
+  `~/.claude/skills/bridge/bridge-axi`), always `--board fleet` (port 4777; binds
+  0.0.0.0, reachable from the captain's other devices).
 - Board state persists in `~/.bridge/boards/fleet.json`; archived cards in
   `~/.bridge/boards/fleet.archive.jsonl`.
 
@@ -159,9 +173,9 @@ memory keeps it applied when this skill is the only context that saw it.
 
 **Placement test.** Makes sense for any agent running a board → `bridge`. Requires
 knowing what a crewmate, PR, or backlog is → here. No firstmate vocabulary, paths, or
-logic ever lands in `claudegoodies/skills/bridge`.
+logic ever lands in the `bridge` skill.
 
 **Fleet-private data** (board aliases, board name choice) stays in the firstmate home's
-`data/`, never in this public repo.
+`data/`, never inside either skill (both may live in public repos).
 
 Text via `--text-file`/`--body-file` or stdin, never shell-interpolated.
