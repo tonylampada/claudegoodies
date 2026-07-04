@@ -21,7 +21,10 @@
 //      state/<id>.status + one batched tmux window list + bounded per-task
 //      pane captures — never from fm-crew-state.sh (which shells out to
 //      no-mistakes with multi-second timeouts per task; too slow for a
-//      run-on-every-wake feeder).
+//      run-on-every-wake feeder). Firstmate's own subagent-delegates also feed
+//      the stripe: state/subagents.json entries RIDE their linked card (see
+//      fm-subagent), and the registry outranks alias and crew-task sources.
+//      Worker priority per card, highest first: registry > alias > crew task.
 //   6. Archives a card when its task lands in backlog Done with verb "merged"
 //      (kill = archive; the card leaves the board, one level-1 ✅ notification).
 //
@@ -238,6 +241,34 @@ function parseAliases(file) {
   return map;
 }
 
+// ---------- subagent registry: state/subagents.json ----------
+// { "<agent-id>": { "card": "<card-id>", "state": "working|idle|needs-you" } }
+// Firstmate's direct subagent-delegates RIDE the card they are linked to (they
+// have no card of their own): the registry feeds worker=<state> onto that card,
+// exactly like crewmate state. Absent, unreadable, or corrupt file => empty (no
+// subagents), never fatal. Returns Map<cardId, state> (the only shape the feeder
+// needs), dropping entries with an unknown state or missing card.
+const SUBAGENT_STATES = new Set(['working', 'idle', 'needs-you']);
+function parseSubagents(file) {
+  const map = new Map(); // cardId -> state
+  const src = readFileSafe(file);
+  if (src == null) return map;
+  let obj;
+  try { obj = JSON.parse(src); } catch (e) { warn('corrupt subagents.json at ' + file + ' (treated as empty)'); return map; }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return map;
+  for (const [agentId, ent] of Object.entries(obj)) {
+    if (!ent || typeof ent !== 'object') continue;
+    const card = ent.card;
+    const state = ent.state;
+    if (typeof card !== 'string' || !card) continue;
+    if (!SUBAGENT_STATES.has(state)) { warn('subagent ' + agentId + ': bad state "' + state + '" (skipped)'); continue; }
+    // Last writer wins if two agents ride the same card (feedWorker is idempotent
+    // per card anyway; this just keeps the map single-valued).
+    map.set(card, state);
+  }
+  return map;
+}
+
 // ---------- secondmate registry ----------
 function parseSecondmates(file) {
   const out = [];
@@ -261,6 +292,7 @@ function planHome(home, owner, board) {
   const stateDir = path.join(home, 'state');
   const metas = parseMetas(stateDir);
   const aliases = parseAliases(path.join(home, 'data', 'board-aliases'));
+  const subagents = parseSubagents(path.join(stateDir, 'subagents.json'));
   const plan = { creates: [], events: [], attrs: [], archives: [], workerDecided: new Set() };
 
   const cardId = (taskId) =>
@@ -309,7 +341,25 @@ function planHome(home, owner, board) {
     live.set(id, t);
   }
 
-  // Worker stripe is decided ALIAS-FIRST so the aliasing (rework) task is the
+  // Worker priority, highest first: REGISTRY (firstmate's subagent-delegates) >
+  // ALIAS (rework task riding a card) > CREW TASK (crewmate/secondmate window).
+  // Each source is decided before the next, and feedWorker() is idempotent per
+  // card, so the highest-priority source wins with no double-write.
+  //
+  // 1) REGISTRY first: a subagent rides its linked card. The registry owns that
+  //    card's stripe outright — a crew-task worker computation and the main()
+  //    stale-sweep must never clobber or clear it (workerDecided marks it ours).
+  //    Ride only an existing board card: never mint a card here (captain: "ride
+  //    the linked card"). A card the registry no longer names falls back to the
+  //    normal alias/crew computation next run, which for a taskless subagent card
+  //    is null (clear) — so clearing an entry clears the stripe cleanly.
+  for (const [cardIdName, state] of subagents) {
+    const card = boardCard(cardIdName);
+    if (!card) continue; // linked card not on the board: skip, don't mint
+    feedWorker(cardIdName, card, state);
+  }
+
+  // 2) ALIAS next: the aliasing (rework) task is the
   // authoritative source for an alias-target card, before any same-named
   // original task (whose torn-down window would otherwise clear that card).
   // feedWorker() is idempotent per card, so the first (alias) decision wins and

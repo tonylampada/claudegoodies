@@ -77,8 +77,9 @@ visible behind the "· N events ·" expanders.
 ## Sync: fm-board-sync (event/attribute feeder)
 
 `fm-board-sync` (this skill dir) reads a firstmate home's on-disk state — `data/backlog.md`
-sections, `state/*.meta`, `state/*.status`, `data/board-aliases`, `data/secondmates.md` +
-each secondmate home (read-only, never written) — and FEEDS the board:
+sections, `state/*.meta`, `state/*.status`, `data/board-aliases`, `state/subagents.json`,
+`data/secondmates.md` + each secondmate home (read-only, never written) — and FEEDS the
+board:
 
 - **Card creation for NEW work only**: an in-flight task with no card yet is born in
   `working` with `type`/`repo`/`owner` attributes and a seed title/body. After birth the
@@ -95,6 +96,17 @@ each secondmate home (read-only, never written) — and FEEDS the board:
   per-task pane captures (never `fm-crew-state.sh`, which is too slow per task for an
   every-wake feeder). Set when changed, cleared when gone; secondmate-owned cards get
   it from their own home.
+  - **Subagent-delegates ride a card**: firstmate's own direct subagent-delegates (no
+    card of their own) feed the stripe onto the card they are linked to. Maintain the
+    registry `state/subagents.json` with `fm-subagent` (this skill dir):
+    `fm-subagent --home <h> set <agent-id> --card <card-id> --state <working|idle|needs-you>`
+    on dispatch, `fm-subagent --home <h> clear <agent-id>` on completion, `list` to
+    inspect. fm-board-sync feeds `worker=<state>` onto the linked card **only if that
+    card already exists** (it rides, never mints). Clearing an entry clears the stripe
+    next sync.
+  - **Worker priority per card, highest wins**: `registry > alias > crew-task`. Exactly
+    one worker decision per card per run — a registry-owned card is never clobbered or
+    cleared by crew-task computation or the stale-sweep.
 - **Merged detection → archive**: a backlog Done entry with verb `merged` archives the
   card via the API (one ✅ notification). Nothing else ever removes a card.
 - **NEVER moves columns.** The canonical column frame above lives in the `COLUMNS`
