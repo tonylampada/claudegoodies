@@ -12,7 +12,8 @@ migrate-v1.js   one-shot v1 → v2 board converter
 ```
 
 State: `~/.bridge/boards/<name>.json` (board), `<name>.archive.jsonl` (killed cards,
-append-only), `<name>.feedback.jsonl` (human→agent queue), `<name>.cursor` (poll cursor),
+append-only), `<name>.feedback.jsonl` (human→agent queue), `<name>.feedback.ack`
+(committed ack cursor; `<name>.cursor` is the legacy CLI cursor, read once at upgrade),
 `~/.bridge/config.json` (user config, e.g. TTS voice filter).
 
 ## Data model (v2)
@@ -52,12 +53,13 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | `GET /` , `GET /ui/*` | the web UI |
 | `GET /api/board` | full board doc |
 | `GET /api/cards/<id>` | one card |
-| `GET /api/status` | `{board, port, cards, seq, feedback_seq, awaiting, pid}` |
+| `GET /api/status` | `{board, port, cards, seq, feedback_seq, feedback_ack, awaiting, pid}` |
 | `GET /api/archive?limit=N` | last N archived records, newest first |
 | `GET /api/notifications?user=U` | level-1 events with read flags, `{items, unread}` |
 | `GET /api/config` | user config (voice filter) |
 | `GET /api/events` | SSE: `board` (full doc on every change) + `status` (`{awaiting}`) |
-| `GET /api/poll?since=N[&nowait=1]` | long-poll the human→agent feedback queue |
+| `GET /api/poll[?since=N][&nowait=1]` | long-poll the human→agent feedback queue |
+| `POST /api/poll/ack` | `{seq}` — commit the ack cursor (see Feedback queue) |
 
 ### Cards
 
@@ -87,12 +89,18 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | `POST /api/notifications/read` | `{user?, seqs?[], all?}` | persist notification read state |
 | `POST /api/read` | `{user?, target, ts?}` | persist a thread read marker (unread badges) |
 
-### Feedback queue
+### Feedback queue (at-least-once)
 
-`GET /api/poll?since=<cursor>` blocks up to 60s and returns
-`{events: [{seq, ts, kind, target, text, …}], cursor}`. Kinds: `message`, `card-created`
-(+`column`), `card-moved` (+`from`, `column`). The queue is durable jsonl; `bridge-axi
-poll` wraps it with a persisted cursor.
+`GET /api/poll` blocks up to 60s and returns
+`{events: [{seq, ts, kind, target, text, …}], cursor, ack}`. Kinds: `message`,
+`card-created` (+`column`), `card-moved` (+`from`, `column`). Without `?since=N` it
+serves everything past the server's **committed ack cursor** — and polling never
+advances that cursor. Delivery is committed only by `POST /api/poll/ack {seq}`
+(`bridge-axi ack <seq>`), sent after the agent has handled the feedback; until then
+every poll re-offers the same events, so an agent/poller killed mid-handling loses
+nothing (duplicates are possible — dedupe by `seq`). The queue is durable jsonl; the
+ack cursor persists in `<name>.feedback.ack` (initialized once from the legacy
+`<name>.cursor` on upgrade).
 
 ## UI notes
 

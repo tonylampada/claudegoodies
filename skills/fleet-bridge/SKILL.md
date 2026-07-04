@@ -87,6 +87,14 @@ each secondmate home (read-only, never written) — and FEEDS the board:
 - **Event appends**, deduped by exact text: `PR opened <url>` (level 2), status-file lines
   (`done:`/`failed:`/`needs-decision:`/`blocked:` → level 1; other lines → level 2).
 - **Attribute updates**: `pr` / `pr_state` when the recorded PR changes.
+- **Worker stripe**: the `worker` attribute (bridge UI's left-edge stripe) is fed from
+  real crewmate state — busy tmux pane → `working`, last status `needs-decision:`/
+  `blocked:` → `needs-you`, live-but-idle window (incl. an idle secondmate) → `idle`,
+  dead/missing window or torn-down task → attribute cleared (no stripe). Derived from
+  `state/<id>.meta` + `state/<id>.status` + one batched `tmux list-windows` and bounded
+  per-task pane captures (never `fm-crew-state.sh`, which is too slow per task for an
+  every-wake feeder). Set when changed, cleared when gone; secondmate-owned cards get
+  it from their own home.
 - **Merged detection → archive**: a backlog Done entry with verb `merged` archives the
   card via the API (one ✅ notification). Nothing else ever removes a card.
 - **NEVER moves columns.** The canonical column frame above lives in the `COLUMNS`
@@ -106,12 +114,17 @@ drop a silent shim in the firstmate home so the watcher's check mechanism runs i
 
 - **Keep exactly one `bridge-axi poll --board fleet` running** as a harness-tracked
   background task (like the watcher arm chain). On exit, handle each JSON line, reply,
-  re-run:
+  then **`bridge-axi ack <seq> --board fleet`** with the highest `seq` handled, re-run
+  poll:
   - `message` — captain instruction in that context: act through the NORMAL firstmate
     lifecycle (steer/dispatch/merge on word), then reflect the outcome on the card.
   - `card-created` — intake contract above.
   - `card-moved` — to `peer`: hands-off (captain territory). Out of `peer`: handback,
     resume. To anywhere else: captain reprioritized; reconcile.
+- **Ack only after handling.** Delivery is at-least-once: the server re-offers every
+  unacked line on the next poll, so a poll task that dies mid-handling drops nothing.
+  A line you've already handled can therefore repeat — dedupe by `seq`, never re-act.
+  Never ack a line you haven't answered/acted on yet.
 - Lifecycle acts firstmate performs on the board (the feeder never does): move to
   `review` when work is ready for the captain (the level-1 👀 move event is the handoff
   notification), rewrite the body to current state before every handoff, archive on merge,

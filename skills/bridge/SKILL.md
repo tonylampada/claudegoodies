@@ -58,7 +58,8 @@ any agent with shell access can drive it.
    state transitions, `archive` when work is dead or landed, `say` to talk.
 3. Keep `bridge-axi poll` running as a tracked background task. It BLOCKS until human
    input, prints JSON lines, and exits; handle each line, reply with
-   `bridge-axi say <target> --text-file <f>`, re-run poll. Lines carry `kind`:
+   `bridge-axi say <target> --text-file <f>`, then `bridge-axi ack <seq>` (highest seq
+   handled), re-run poll. Lines carry `kind`:
    - `message` — human message; `target` is `chat` or `card:<id>`.
    - `card-created` — the human made a card in the UI (`target` names it): treat it as an
      intake request, respond in its thread.
@@ -70,8 +71,10 @@ any agent with shell access can drive it.
 Rules:
 - Message/body text goes via `--text-file`/`--body-file` or stdin — never interpolated
   into a shell command.
-- `poll` persists its cursor in `~/.bridge/boards/<name>.cursor`; nothing is lost between
-  polls.
+- Delivery is at-least-once: feedback counts as delivered only when `ack`ed, never by
+  being polled. An unacked line is re-offered by every poll — so a poller killed
+  mid-handling loses nothing, and a repeated line (same `seq`) just means the previous
+  handling never acked; dedupe by `seq`. Ack only what you have actually handled.
 - Cards are for units of work, not for questions — ask questions in a thread (`say`) plus
   a level-1 `question` event on the card the question belongs to.
 

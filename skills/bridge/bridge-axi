@@ -90,12 +90,10 @@ function parseAttrs(list) {
   }
   return out;
 }
+// legacy local poll cursor — no longer written; the committed ack cursor lives
+// server-side now (see `ack`). Read only as a fallback against an old server.
 function readCursor() {
   try { return parseInt(fs.readFileSync(CURSOR_FILE, 'utf8'), 10) || 0; } catch (e) { return 0; }
-}
-function writeCursor(n) {
-  fs.mkdirSync(BOARDS_DIR, { recursive: true });
-  fs.writeFileSync(CURSOR_FILE, String(n));
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function hhmm(iso) { try { return new Date(iso).toISOString().slice(5, 16).replace('T', ' '); } catch (e) { return ''; } }
@@ -259,24 +257,34 @@ async function cmdSay() {
 }
 
 async function cmdPoll() {
-  let cursor = readCursor();
+  // At-least-once: the server serves everything past its committed ack cursor and
+  // poll never advances it. After HANDLING the lines (replying), run
+  // `bridge-axi ack <seq>` with the highest seq handled; until then every poll
+  // re-offers the same lines (dedupe by seq), so a killed poller loses nothing.
   for (;;) {
     let r;
-    try { r = await request('GET', '/api/poll?since=' + cursor, null, 70000); }
+    try { r = await request('GET', '/api/poll', null, 70000); }
     catch (e) { die('poll failed: ' + e.message); }
     if (r.events && r.events.length) {
       for (const ev of r.events) console.log(JSON.stringify(ev));
-      writeCursor(r.cursor);
       return; // exit after first batch so a harness gets notified
     }
-    cursor = r.cursor; // empty long-poll timed out; loop again
+    // empty long-poll timed out; loop again
   }
+}
+
+async function cmdAck() {
+  const seq = parseInt(positional[0], 10);
+  if (!Number.isInteger(seq) || seq < 0) die('usage: bridge-axi ack <seq>   (highest feedback seq you have HANDLED)');
+  const r = await request('POST', '/api/poll/ack', { seq });
+  console.log('acked ' + seq + ' (committed=' + r.ack + ')');
 }
 
 async function cmdStatus() {
   const st = await serverUp();
   if (!st) { console.log('server: down (port ' + opts.port + ')'); process.exit(1); }
-  const pending = Math.max(0, st.feedback_seq - readCursor());
+  const ack = st.feedback_ack != null ? st.feedback_ack : readCursor(); // old server fallback
+  const pending = Math.max(0, st.feedback_seq - ack);
   const awaiting = Array.isArray(st.awaiting) ? st.awaiting.length : 0;
   console.log('server: up  board=' + st.board + '  cards=' + st.cards + '  pending-feedback=' + pending + '  awaiting-reply=' + awaiting + '  url=http://localhost:' + opts.port + '/');
 }
@@ -315,7 +323,7 @@ async function cmdConfig() {
 const commands = {
   open: cmdOpen, columns: cmdColumns, board: cmdBoard, show: cmdShow, thread: cmdThread,
   create: cmdCreate, move: cmdMove, patch: cmdPatch, event: cmdEvent, notify: cmdNotify,
-  archive: cmdArchive, archived: cmdArchived, say: cmdSay, poll: cmdPoll,
+  archive: cmdArchive, archived: cmdArchived, say: cmdSay, poll: cmdPoll, ack: cmdAck,
   status: cmdStatus, config: cmdConfig, stop: cmdStop,
 };
 if (!commands[cmd]) {
@@ -342,10 +350,14 @@ if (!commands[cmd]) {
     '  archive <card-id> [--reason "..."]     kill = archive (append-only file, off the board)\n' +
     '  say <chat|card:ID> [--text-file f|-]   post a chat message (main chat says also notify)\n' +
     '  columns <file.json|->                  replace the column frame [{id,title}] (idempotent)\n' +
-    '\nloop:\n' +
-    '  poll                                   BLOCK until user feedback, print JSON lines, exit\n' +
+    '\nloop (at-least-once):\n' +
+    '  poll                                   BLOCK until unacked user feedback, print JSON lines, exit\n' +
     '    lines: {"seq","ts","kind":"message|card-created|card-moved","target","text",...}\n' +
-    '    run as a tracked background task; on exit handle lines, reply via say, re-run\n' +
+    '    run as a tracked background task; on exit handle lines, reply via say,\n' +
+    '    then ack the highest seq handled, re-run poll\n' +
+    '  ack <seq>                              commit the server ack cursor to <seq>. Feedback is\n' +
+    '    NOT considered delivered until acked: an unacked line is re-offered by every poll\n' +
+    '    (so a killed poller loses nothing; dedupe repeats by seq)\n' +
     '\nconfig:\n' +
     '  config show | config voices "a,b"      TTS voice filter for the UI\n' +
     '\nText/body always via --text-file/--body-file or stdin ("-"), never shell-interpolated.');

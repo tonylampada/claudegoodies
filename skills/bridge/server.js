@@ -158,15 +158,38 @@ function pushFeedback(rec) {
   return ev;
 }
 
+// ---------- committed ack cursor (at-least-once delivery) ----------
+// Feedback <= ackSeq has been HANDLED by the agent, not merely delivered. Poll
+// serves everything past it and never advances it; only POST /api/poll/ack does.
+// So a poller that dies before the agent handles its lines re-offers the same
+// feedback on the next poll — duplicates are possible, loss is not (dedupe by seq).
+const ACK_FILE = path.join(BOARDS_DIR, opts.board + '.feedback.ack');
+const LEGACY_CURSOR_FILE = path.join(BOARDS_DIR, opts.board + '.cursor');
+function loadAck() {
+  try { return parseInt(fs.readFileSync(ACK_FILE, 'utf8'), 10) || 0; }
+  catch (e) {}
+  // first run after upgrade: adopt the CLI's old local poll cursor so feedback
+  // already delivered under the old at-most-once model is not re-offered
+  try { return parseInt(fs.readFileSync(LEGACY_CURSOR_FILE, 'utf8'), 10) || 0; }
+  catch (e) { return 0; }
+}
+let ackSeq = loadAck();
+function commitAck(n) {
+  if (n <= ackSeq) return;
+  ackSeq = n;
+  fs.writeFileSync(ACK_FILE, String(ackSeq));
+}
+
 // ---------- long-poll waiters ----------
-let pollers = []; // {since, res, timer}
+let pollers = []; // {since, res, timer}; since=null means "the committed ack cursor"
 function feedbackSince(since) { return feedback.filter((e) => e.seq > since); }
+function pollerSince(p) { return p.since == null ? ackSeq : p.since; }
 function flushPollers() {
   pollers = pollers.filter((p) => {
-    const evs = feedbackSince(p.since);
+    const evs = feedbackSince(pollerSince(p));
     if (!evs.length) return true;
     clearTimeout(p.timer);
-    sendJson(p.res, 200, { events: evs, cursor: fseq });
+    sendJson(p.res, 200, { events: evs, cursor: fseq, ack: ackSeq });
     return false;
   });
 }
@@ -356,7 +379,7 @@ const server = http.createServer(async (req, res) => {
     if (route === 'GET /api/status') {
       return sendJson(res, 200, {
         board: opts.board, port: opts.port, cards: board.cards.length, seq: board.seq,
-        feedback_seq: fseq, awaiting: Array.from(awaiting), pid: process.pid,
+        feedback_seq: fseq, feedback_ack: ackSeq, awaiting: Array.from(awaiting), pid: process.pid,
       });
     }
     if (route === 'GET /api/archive') {
@@ -551,20 +574,31 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, labels: board.labels });
     }
 
-    // ----- agent long-poll -----
+    // ----- agent long-poll (no ?since = everything past the committed ack cursor) -----
     if (route === 'GET /api/poll') {
-      const since = parseInt(url.searchParams.get('since') || '0', 10) || 0;
-      const evs = feedbackSince(since);
-      if (evs.length) return sendJson(res, 200, { events: evs, cursor: fseq });
-      if (url.searchParams.get('nowait')) return sendJson(res, 200, { events: [], cursor: fseq });
+      const sinceParam = url.searchParams.get('since');
+      const since = sinceParam == null || sinceParam === '' ? null : (parseInt(sinceParam, 10) || 0);
+      const evs = feedbackSince(since == null ? ackSeq : since);
+      if (evs.length) return sendJson(res, 200, { events: evs, cursor: fseq, ack: ackSeq });
+      if (url.searchParams.get('nowait')) return sendJson(res, 200, { events: [], cursor: fseq, ack: ackSeq });
       const poller = { since, res, timer: null };
       poller.timer = setTimeout(() => {
         pollers = pollers.filter((x) => x !== poller);
-        sendJson(res, 200, { events: [], cursor: fseq });
+        sendJson(res, 200, { events: [], cursor: fseq, ack: ackSeq });
       }, 60000);
       req.on('close', () => { clearTimeout(poller.timer); pollers = pollers.filter((x) => x !== poller); });
       pollers.push(poller);
       return;
+    }
+
+    // ----- agent ack: commit the cursor AFTER the feedback was handled -----
+    if (route === 'POST /api/poll/ack') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const seq = parseInt(body.seq, 10);
+      if (!Number.isInteger(seq) || seq < 0) return sendJson(res, 400, { error: 'seq required (integer)' });
+      if (seq > fseq) return sendJson(res, 400, { error: 'seq ' + seq + ' beyond queue head ' + fseq });
+      commitAck(seq);
+      return sendJson(res, 200, { ok: true, ack: ackSeq });
     }
 
     // ----- SSE -----
