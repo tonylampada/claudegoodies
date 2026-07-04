@@ -73,9 +73,18 @@ The system breaks if you skip any of these. The feeder is forbidden from doing t
   (`clear` unlinks; it rides existing cards, never mints).
 - **Archive beyond merge.** Merge-archive is the feeder's; every other "this is dead /
   landed / acted on" archive is your call: `bridge-axi archive <id> [--note ...]`.
-- **Answer the feed.** Keep exactly ONE `bridge-axi poll --board fleet` running as a
-  harness-tracked background task (like the watcher arm chain). On exit: handle each JSON
-  line, reply, `bridge-axi ack <seq>` with the highest seq handled, re-run poll:
+- **Answer the feed — the poll discipline is the watcher discipline.** Keep exactly ONE
+  `bridge-axi poll --board fleet` running as a harness-tracked background task at ALL
+  times while the board is in operation. The poll is the captain's ONLY path to you from
+  the board: a dead poll means his card messages sit unanswered indefinitely and NOTHING
+  else wakes you. So, non-negotiable, mirroring "no turn ends blind":
+  - The poll dies with every server restart and every fire. **Re-arm it in the SAME turn**
+    that restarted the server or handled the fire — never defer to "next turn".
+  - **No turn ends deaf**: before ending ANY turn while the board is live, if you cannot
+    point to a live poll task you armed or verified this turn, arm one now.
+  - Never launch it with a shell `&`; only as the harness's own tracked background task.
+  On poll exit: handle each JSON line, reply, `bridge-axi ack <seq>` with the highest seq
+  handled, re-run poll:
   - `message` — captain instruction in that context: act through the NORMAL firstmate
     lifecycle (steer/dispatch/merge on word), then reflect the outcome on the card.
   - `card-created` — awareness only (intake contract below). Ack it.
