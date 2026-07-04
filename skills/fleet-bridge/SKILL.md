@@ -131,6 +131,16 @@ the "· N events ·" expanders: `progress` 📣 (any other status line), `pr-ope
 `pr-merged` 🟣 (the attribute note before the merge-archive's `landed` bell),
 `worker-linked` 🔗 / `worker-gone` 💤 (lease transitions, fired once per change).
 
+**Worker briefs narrate milestones.** When this skill is active, every ship/scout brief
+you write gets one instruction added to its task section: append a one-line
+`working: <headline>` status at meaningful milestones — branch created, approach decided,
+implementation committed, tests green, PR opened, review round addressed. One short
+headline per milestone (every 10-30 min of real progress, not per-edit chatter). The
+watcher absorbs no-verb `working:` lines at zero cost while the worker is provably
+working, and the feeder turns each one into a 📣 `progress` event — this is what keeps a
+green card telling the captain what its worker is actually doing. This is a brief-content
+rule of THIS skill, not a change to the firstmate template's scaffold.
+
 **Board = mirror.** Firstmate's files stay canonical; when they disagree, fix the board.
 
 **Placement test.** Makes sense for any agent running a board → `bridge`. Requires
