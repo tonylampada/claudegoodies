@@ -393,8 +393,13 @@ input, textarea, select { font: inherit; color: var(--text); }
   #topbar { height: auto; min-height: 46px; padding: calc(env(safe-area-inset-top)) 10px 0; gap: 8px; }
   #b-subtitle { display: none; }
   #filter-wrap { gap: 4px; }
-  #filter { width: 100%; min-width: 60px; font-size: 12.5px; padding: 5px 9px; }
+  #filter { width: 100%; min-width: 60px; padding: 5px 9px; }
   #filter-age { display: none; }
+  /* iOS auto-zooms a text field on focus when its font-size is < 16px, which
+     blows up the whole layout. Force every focusable text input to 16px on
+     mobile so focus never triggers a zoom (the accessible fix; the viewport
+     maximum-scale is only a secondary guard). */
+  #filter, .composer textarea, #lp-input, #nc-name, #nc-body, #nc-column { font-size: 16px; }
   #layout { flex-direction: column; min-height: 0; }
   /* each view fills the space above the tab bar and owns its own scroll region */
   #chat { width: 100%; flex: 1; min-height: 0; border-right: none; display: none; }

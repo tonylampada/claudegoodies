@@ -67,6 +67,15 @@ function mainFeedItems() {
   return items;
 }
 
+// the conversation currently shown; a change means "jump to the newest message"
+let lastViewKey = null;
+// #chat can still be display:none this frame (renderTabs runs after renderChat),
+// so defer the scroll across two frames until layout + visibility have settled.
+function scrollFeedToBottom() {
+  const jump = () => { feedEl.scrollTop = feedEl.scrollHeight; };
+  requestAnimationFrame(() => { jump(); requestAnimationFrame(jump); });
+}
+
 export function renderChat() {
   const isCard = S.chatMode.mode === 'card';
   const c = isCard ? card(S.chatMode.id) : null;
@@ -77,6 +86,12 @@ export function renderChat() {
   titleEl.textContent = isCard ? cardEmoji(c) + ' ' + (c.title || c.id) : '💬 chat';
   inputEl.placeholder = isCard ? 'message this card…' : 'message the agent…';
 
+  // Land at the newest message when the visible conversation changes (first
+  // paint, tab switch into Chat, or entering/leaving a card thread) or when the
+  // feed was already near the bottom; otherwise leave the reader's scroll be.
+  const viewKey = currentTarget() + '|' + (window.innerWidth <= 760 ? S.view : 'desktop');
+  const switched = viewKey !== lastViewKey;
+  lastViewKey = viewKey;
   const pinned = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 48;
   let html = '', lastDay = '';
   const push = (ts, itemHtml) => {
@@ -91,7 +106,8 @@ export function renderChat() {
   }
   if (S.awaiting.has(currentTarget())) html += typingHtml();
   feedEl.innerHTML = html || '<div class="empty">no messages yet</div>';
-  if (pinned) feedEl.scrollTop = feedEl.scrollHeight;
+  if (switched) scrollFeedToBottom(); // deferred: the feed may still be hidden this frame
+  else if (pinned) feedEl.scrollTop = feedEl.scrollHeight;
 
   feedEl.querySelectorAll('.tbubble').forEach((b) => {
     b.onclick = () => openCardThread(b.dataset.card);
