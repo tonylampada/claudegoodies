@@ -26,10 +26,10 @@ export function dayLabel(iso) {
 // well-known signal emojis per event kind
 export const KIND_EMOJI = { alert: '🚨', question: '❓', handoff: '👀', success: '✅', info: '💡' };
 
-// default emojis for common card `type` attribute values; attributes.emoji overrides
+// default emojis for the card `type` attribute; attributes.emoji overrides,
+// unknown types fall back to the neutral marker below
 const TYPE_EMOJI = {
-  plan: '📋', implementation: '🔧', investigation: '🔍', discussion: '💬',
-  bug: '🐛', idea: '💡', task: '📌', doc: '📄',
+  plan: '🧠', implementation: '🔥', investigation: '🕵️‍♂️',
 };
 export function cardEmoji(card) {
   const at = (card && card.attributes) || {};

@@ -192,9 +192,13 @@ input, textarea, select { font: inherit; color: var(--text); }
 .column h2 .add-card:hover { color: var(--accent); background: var(--accent-soft); }
 .cards { flex: 1; min-height: 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 7px; padding: 9px; }
 
-/* tile: small + dense */
+/* tile: small + dense. flex:none — tiles are flex children of the scrollable
+   .cards column; overflow:hidden zeroes their automatic min-height, so without
+   it they'd flex-shrink to fit the column and clip chips at the bottom edge
+   (seen on narrow screens where 2-line titles make tiles taller). A tile always
+   keeps its natural content height; the column scrolls. */
 .tile {
-  position: relative; overflow: hidden;
+  position: relative; overflow: hidden; flex: none;
   background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
   padding: 9px 11px; cursor: pointer; user-select: none; -webkit-user-select: none;
   transition: border-color .15s, transform .12s, box-shadow .15s;

@@ -1,5 +1,5 @@
 // card detail: attributes header + markdown body + event timeline (chat lives in the chat panel)
-import { S, card, render, toggleFilter, filterSelected } from './state.js';
+import { S, USER, card, cardStatus, render, toggleFilter, filterSelected } from './state.js';
 import { esc, hhmm, ago, cardEmoji, ownerColor, KIND_EMOJI, cardPrs, prChipHtml, cardArtifacts } from './util.js';
 import { md } from './md.js';
 import { api } from './api.js';
@@ -122,6 +122,24 @@ titleInput.onkeydown = (e) => {
 };
 titleInput.onblur = commitTitleEdit;
 
+// Opening the card clears its unread: level-1 events and agent replies both
+// derive from the same per-card read marker server-side, so one POST covers
+// both. The chat panel only marks the thread when IT is visible (and only on
+// unread messages), which misses the mobile detail view and event-only unread —
+// this is the detail-side half. Debounced like chat.js maybeMarkRead: keyed by
+// the newest unread-relevant ts so re-renders never spam the endpoint.
+let lastMarked = { id: '', ts: '' };
+function maybeMarkCardRead(c) {
+  if (document.hidden) return;
+  if (!cardStatus(c).unread) return; // server-derived; false once the marker lands
+  let ts = '';
+  for (const m of c.thread || []) if (m.author !== USER && m.ts > ts) ts = m.ts;
+  for (const e of c.events || []) if (e.level === 1 && e.ts > ts) ts = e.ts;
+  if (lastMarked.id === c.id && lastMarked.ts === ts) return; // already sent
+  lastMarked = { id: c.id, ts };
+  api.markThreadRead('card:' + c.id).catch(() => { lastMarked = { id: '', ts: '' }; });
+}
+
 function attrHtml(k, v) {
   const isUrl = /^https?:\/\//.test(String(v));
   const val = isUrl
@@ -217,4 +235,6 @@ export function renderDetail() {
     '<div class="tx">' + (e.level === 1 ? esc(KIND_EMOJI[e.kind] || '') + ' ' : '') + esc(e.text) + '</div>' +
     '<div class="sub">' + esc(e.actor || '') + ' · ' + hhmm(e.ts) + ' · ' + ago(e.ts) + ' ago</div>' +
     '</div></div>').join('') || '<div class="ev"><div class="bd"><div class="sub">no events yet</div></div></div>';
+
+  maybeMarkCardRead(c);
 }
