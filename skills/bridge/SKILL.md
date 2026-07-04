@@ -32,9 +32,11 @@ any agent with shell access can drive it.
   with its actor. Automated feeders must never move cards.
 - **Cards**: `{id, title, column, labels, attributes, body, events, thread}`.
   - `attributes`: generic key/value pairs (URLs render as links). Well-known keys the UI
-    understands: `type` (sets the tile emoji: plan 📋, implementation 🔧, investigation 🔍,
-    discussion 💬, bug 🐛, idea 💡, task 📌, doc 📄), `emoji` (explicit override),
-    `owner` (colored, groupable, click-to-filter).
+    understands: `type` (sets the tile emoji: plan 🧠, implementation 🔥,
+    investigation 🕵️‍♂️; unknown types get a neutral marker), `emoji` (explicit override),
+    `owner` (colored, groupable, click-to-filter), `prs` (list of
+    `{url, state: open|merged|closed}` — state-colored chips), `artifacts` (list of
+    `{uri, label}` — resources hung on the card).
   - `body`: markdown, the card's CURRENT state — rewrite it as work evolves.
   - `events`: append-only timestamped timeline. Level 2 = timeline only; level 1 = also a
     notification. Kinds and their signal emojis: `alert` 🚨, `question` ❓, `handoff` 👀,
@@ -46,7 +48,11 @@ any agent with shell access can drive it.
   the bell dropdown. Per-user read state persists server-side in the board file.
 - **Kill = archive**: `bridge-axi archive <id>` snapshots the card to the append-only
   archive file and removes it from the board. No destructive delete; `bridge-axi archived`
-  lists recent kills.
+  lists recent kills. An archived card can be restored: `bridge-axi restore <id>` brings
+  the most recent snapshot back in full (body, events, thread, frozen column) with a loud
+  level-1 event; the archive record stays, so **the board is truth for liveness** — an
+  archive record never by itself means the card is off the board. A card restored into a
+  column that has since been removed from the frame won't render until moved.
 
 ## Agent loop
 
@@ -55,14 +61,16 @@ any agent with shell access can drive it.
    pass `--host 127.0.0.1` to restrict.
 2. Feed reality: `create` new cards, `patch` bodies/attributes as state evolves, `event`
    for timeline signals (level 1 only for things the human must see), `move` for real
-   state transitions, `archive` when work is dead or landed, `say` to talk.
+   state transitions, `archive` when work is dead or landed, `restore` to resurrect an
+   archived card, `say` to talk.
 3. Keep `bridge-axi poll` running as a tracked background task. It BLOCKS until human
    input, prints JSON lines, and exits; handle each line, reply with
    `bridge-axi say <target> --text-file <f>`, then `bridge-axi ack <seq>` (highest seq
    handled), re-run poll. Lines carry `kind`:
    - `message` — human message; `target` is `chat` or `card:<id>`.
-   - `card-created` — the human made a card in the UI (`target` names it): treat it as an
-     intake request, respond in its thread.
+   - `card-created` — the human made a card in the UI (`target` names it). Awareness
+     only: creating a card is not a demand — a card with an empty thread owes nothing.
+     Act when the human speaks in its thread or main chat.
    - `card-moved` — the human moved a card (`from`/`column` fields): a handoff or a
      handback, act accordingly.
 4. Always answer feedback with `say` to the same target — the UI shows "agent is working…"
@@ -81,10 +89,15 @@ Rules:
 
 ## Notifications and read state
 
-Level-1 events light the bell with signal emojis; the human can mark items read, mark all,
-and expand the "· N events ·" dividers to see everything. Read state lives in the board
-JSON per user (default user `user`), so it survives reloads and devices. Thread unread
-badges (chat bubbles, tiles) use per-thread read markers, also server-side.
+The bell is a derived view of everything the human hasn't seen yet — one read-state
+mechanism, two scopes: level-1 events (signal emojis) UNION unseen agent thread replies
+(kind `reply`; no seq of their own, so they ride the per-thread read marker and show the
+💡 fallback emoji — the "· N events ·" gap dividers skip them). Opening a card clears its
+unread (events and replies alike); "mark all" marks the event items read AND advances the
+thread read markers of cards with unseen replies, so it also clears those cards' unread.
+Read state lives in the board JSON per user (default user `user`), so it survives reloads
+and devices. Thread unread badges (chat bubbles, tiles) use the same per-thread read
+markers, also server-side.
 
 ## Voice
 

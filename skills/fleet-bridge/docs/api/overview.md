@@ -1,6 +1,7 @@
 # fleet-bridge — Conceptual API (DNA)
 
-> **Draft target spec.** The upcoming rebuild implements this; current code predates it.
+> This IS the spec the implementation follows. A disagreement between this document and
+> the code is a bug in one of them — change deliberately, never let them drift.
 
 fleet-bridge maps firstmate fleet reality onto a generic [bridge](../../../bridge/docs/api/overview.md) board. Bridge owns structure and mechanics (cards, events, chat, feed, status leases); this layer owns every value's meaning.
 

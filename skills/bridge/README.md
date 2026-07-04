@@ -25,7 +25,8 @@ e.g. TTS voice filter).
   "cards": [{
     "id": "fix-login", "title": "Fix login", "column": "todo",
     "labels": ["urgent"],                              // USER-owned
-    "attributes": {"type": "implementation", "owner": "agent-a", "pr": "https://…"},
+    "attributes": {"type": "implementation", "owner": "agent-a",
+                   "prs": [{"url": "https://…", "state": "open"}]},
     "body": "## Current state\n…",                    // markdown, rewritten as work evolves
     "created": "…", "updated": "…", "threadStart": "…", // threadStart: fixed chat anchor
     "status": {"worker": {"id": "fix-1", "state": "working", "expires": "…"}}, // lease; only status.set writes it

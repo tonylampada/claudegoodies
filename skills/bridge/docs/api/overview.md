@@ -1,6 +1,7 @@
 # bridge — Conceptual API (DNA)
 
-> **Draft target spec.** The upcoming rebuild implements this; current code predates it.
+> This IS the spec the implementation follows. A disagreement between this document and
+> the code is a bug in one of them — change deliberately, never let them drift.
 
 bridge is a generic agent kanban board: a zero-dep node server, a vanilla JS UI for the user, and a CLI for the agent. It knows nothing about any particular agent system — it stores structure, derives a few signals, and delivers messages. The **meaning** of the values a client writes (`type`, custom attributes, worker ids) is the client agent's business.
 
