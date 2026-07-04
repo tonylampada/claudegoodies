@@ -20,6 +20,9 @@
 // level-1 slice of that stream; read state persists in board.reads (server-side).
 // Kill = archive: the card is snapshotted to <name>.archive.jsonl (append-only,
 // reason: merged|killed) and removed from the board. No destructive delete.
+// Restore = resurrection: the most recent archived snapshot comes back onto the
+// board in full (never a blank rebirth) with a loud level-1 event; the archive
+// log stays append-only, so the board — not the archive — is truth for liveness.
 'use strict';
 
 const http = require('http');
@@ -404,6 +407,12 @@ function patchCard(card, body) {
   registerCardLabels();
 }
 
+function readArchive() {
+  try {
+    return fs.readFileSync(ARCHIVE_FILE, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch (e) { return []; }
+}
+
 function archiveCard(card, body, actorDefault) {
   const actor = String((body && body.actor) || actorDefault || 'agent').slice(0, 60);
   // Archive reason is the validated enum `merged | killed` (merged = landed,
@@ -425,6 +434,38 @@ function archiveCard(card, body, actorDefault) {
   ev.card = card.id; ev.cardTitle = card.title; ev.archived = true;
   board.events.push(ev);
   return { ok: true, event: ev };
+}
+
+// card.restore — back from the archive with frozen state intact. The MOST RECENT
+// archive record for the id wins (a card can be archived and restored repeatedly).
+// The archive log stays append-only: the original record REMAINS, so an archive
+// record can exist for a live card — the board is truth for liveness. The frozen
+// snapshot is restored in full (body, events, thread, attributes, column); only
+// the worker lease starts absent (nothing is working a resurrected card until
+// status.set says so), and owed/unread re-derive from the restored thread/events
+// against the per-user read state as on any card. The return is loud: a level-1
+// event says the card was resurrected and by whom.
+function restoreCard(id, body) {
+  if (findCard(id)) return { error: 'card already on the board: ' + id, code: 409 };
+  let rec = null;
+  for (const r of readArchive()) if (r && r.card && r.card.id === id) rec = r; // last = most recent
+  if (!rec) return { error: 'not in archive: ' + id, code: 404 };
+  const card = JSON.parse(JSON.stringify(rec.card)); // the frozen snapshot, in full
+  if (!Array.isArray(card.events)) card.events = [];
+  if (!Array.isArray(card.thread)) card.thread = [];
+  if (!Array.isArray(card.labels)) card.labels = [];
+  if (!card.attributes || typeof card.attributes !== 'object') card.attributes = {};
+  card.status = { worker: null }; // the lease starts absent until the next status.set
+  for (const e of card.events) if (e.seq > board.seq) board.seq = e.seq; // defensive: no seq reuse
+  const ev = mkEvent({
+    level: 1, kind: body && body.kind, actor: body && body.actor,
+    text: String((body && body.text) || '').trim() || 'resurrected',
+  }, { kind: 'alert' });
+  card.events.push(ev);
+  card.updated = now();
+  board.cards.push(card);
+  registerCardLabels();
+  return { ok: true, card, event: ev };
 }
 
 // ---------- static ui ----------
@@ -464,8 +505,7 @@ const server = http.createServer(async (req, res) => {
       });
     }
     if (route === 'GET /api/archive') {
-      let recs = [];
-      try { recs = fs.readFileSync(ARCHIVE_FILE, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch (e) {}
+      const recs = readArchive();
       const n = parseInt(url.searchParams.get('limit') || '50', 10) || 50;
       return sendJson(res, 200, { archive: recs.slice(-n).reverse() });
     }
@@ -483,6 +523,15 @@ const server = http.createServer(async (req, res) => {
       if (r.error) return sendJson(res, r.code || 400, { error: r.error });
       saveBoard(); broadcast();
       return sendJson(res, 200, { ok: true, card: publicCard(r.card, 'user') });
+    }
+    // restore targets a card that is NOT on the board, so it routes before the
+    // find-card paths (which would 404 the normal restore case).
+    const restoreRoute = /^\/api\/cards\/([^/]+)\/restore$/.exec(p);
+    if (restoreRoute && req.method === 'POST') {
+      const r = restoreCard(decodeURIComponent(restoreRoute[1]), JSON.parse(await readBody(req) || '{}'));
+      if (r.error) return sendJson(res, r.code || 400, { error: r.error });
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true, card: publicCard(r.card, 'user'), event: r.event });
     }
     const cardRoute = /^\/api\/cards\/([^/]+)(\/(move|events|archive|status))?$/.exec(p);
     if (cardRoute) {

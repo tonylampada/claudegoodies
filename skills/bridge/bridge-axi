@@ -246,6 +246,17 @@ async function cmdArchive() {
   console.log('archived ' + id);
 }
 
+async function cmdRestore() {
+  const id = positional[0];
+  if (!id) die('usage: bridge-axi restore <card-id> [--actor a] [--note "..."] [--kind K]\n  (resurrection event text from --note or --text-file; default "resurrected")');
+  const body = { actor: opts.actor || 'agent' };
+  if (opts.textFile) body.text = readInput(opts.textFile).trim();
+  else if (opts.note) body.text = opts.note;
+  if (opts.kind) body.kind = opts.kind;
+  const r = await request('POST', '/api/cards/' + encodeURIComponent(id) + '/restore', body);
+  console.log('restored ' + id + ' in ' + r.card.column);
+}
+
 async function cmdArchived() {
   const r = await request('GET', '/api/archive?limit=' + (parseInt(positional[0], 10) || 20));
   if (opts.json) return console.log(JSON.stringify(r.archive, null, 2));
@@ -352,7 +363,7 @@ async function cmdConfig() {
 const commands = {
   open: cmdOpen, columns: cmdColumns, board: cmdBoard, show: cmdShow, thread: cmdThread,
   create: cmdCreate, move: cmdMove, patch: cmdPatch, event: cmdEvent, notify: cmdNotify,
-  archive: cmdArchive, archived: cmdArchived, say: cmdSay, poll: cmdPoll, ack: cmdAck,
+  archive: cmdArchive, restore: cmdRestore, archived: cmdArchived, say: cmdSay, poll: cmdPoll, ack: cmdAck,
   status: cmdStatus, config: cmdConfig, stop: cmdStop,
 };
 if (!commands[cmd]) {
@@ -386,6 +397,10 @@ if (!commands[cmd]) {
     '                                         kill = archive (append-only file, off the board);\n' +
     '                                         reason is the validated enum (default killed),\n' +
     '                                         free text goes in --note\n' +
+    '  restore <card-id> [--note "..."]       resurrect: bring the most recent archived snapshot\n' +
+    '                                         back onto the board with frozen state intact (the\n' +
+    '                                         archive record stays); appends a loud level-1 event\n' +
+    '                                         (--note or --text-file = its text, default "resurrected")\n' +
     '  say <chat|card:ID> [--text-file f|-]   post a chat message (main chat says also notify)\n' +
     '  columns <file.json|->                  replace the column frame [{id,title}] (idempotent)\n' +
     '\nloop (at-least-once):\n' +

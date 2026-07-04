@@ -91,6 +91,8 @@ Born on first use (`card.patch` with a new tag name creates it); no dedicated li
 
 Append-only. Nothing is ever deleted. Cards leave the board only by archive.
 
+**Resurrection.** An archive is not a tomb: `card.restore` brings a card **back from the archive** — the most recent frozen snapshot for that id restored in full (body, events, thread, attributes, column as frozen), never a blank rebirth. The return is loud: a level-1 event on the restored card says it was resurrected and by whom (the caller passes the event text; default `resurrected`), so the user sees WHY in the timeline. The archive log stays append-only — the original archive record remains, so a record's existence never implies the card is off the board: **the board is truth for liveness**. The restored card's worker lease starts `absent` until the next `status.set`; `owed` and `unread` re-derive from the restored thread/events and the per-user read state like on any other card.
+
 ## Operations
 
 The callable surface; callers are the user's UI and the client agent.
@@ -100,6 +102,7 @@ The callable surface; callers are the user's UI and the client agent.
 - `card.move(card, column)` — deliberate act only (user drag / agent decision); records actor
 - `card.patch(card, {title?, body?, attrs?})`
 - `card.archive(card)` — the only way off the board
+- `card.restore(card)` — back from the archive with frozen state intact (most recent record); records actor; appends the loud level-1 resurrection event. Fails when the card was never archived or is already on the board
 
 ### event
 - `event.append(card, text, level)`

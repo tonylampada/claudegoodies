@@ -71,6 +71,7 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | `POST /api/cards/<id>/move` | `{column, actor?, level?, kind?}` | records a timeline event with the actor. Default level: agent move = 1 (notifies the human), user move = 2. User moves push `card-moved` feedback. |
 | `POST /api/cards/<id>/events` | `{text, level?, kind?, actor?}` | append event (default level 2 / kind info) |
 | `POST /api/cards/<id>/archive` | `{actor?, reason?, note?, level?, kind?}` | kill = archive: snapshot to the archive file, remove from board, level-1 ✅ board event by default. `reason` is the validated enum `merged \| killed` (default `killed`; anything else is a 400); optional free-text `note` is preserved on the record |
+| `POST /api/cards/<id>/restore` | `{actor?, text?, kind?}` | resurrection: bring the most recent archived snapshot for the id back onto the board — frozen body/events/thread/attributes/column restored in full, worker lease starting absent. Appends a loud level-1 event (`text` default `resurrected`). The archive log is untouched (append-only; the original record remains). 404 if never archived, 409 if already on the board. |
 | `POST /api/cards/<id>/status` | `{worker: {id, state} \| null, ttl?}` | `status.set` — link a worker to the card as a lease. `state` ∈ `absent\|idle\|working\|needs-you`; `ttl` in seconds (default 600; `BRIDGE_WORKER_TTL_SECS`). `null` worker or state `absent` unlinks. |
 
 ### Status
