@@ -31,6 +31,22 @@ no better.
 - CLI: `bridge-axi` in the installed `bridge` skill's directory (e.g.
   `~/.claude/skills/bridge/bridge-axi`), always `--board fleet` (port 4777; binds
   0.0.0.0, reachable from the captain's other devices).
+
+## "Captain on the bridge" — starting the board
+
+The bridge server is never started automatically — bringing the board up is the
+captain's order, and the order has a name. When the captain says **"Captain on the
+bridge"** (or otherwise clearly asks for the board), that is your cue:
+
+1. `bridge-axi open --board fleet --host 0.0.0.0` — idempotent: starts the server if
+   needed and prints the URL.
+2. Arm the poll and run the sync (sections below) — a fresh server means no poll is
+   listening yet.
+3. Hand the captain the URL. Nothing else; the board speaks for itself.
+
+Until that order, never boot the server as a side effect of session start, syncing, or
+anything else. The order governs startup only: a board already running stays running,
+and everything in this skill applies whenever it is up.
 - Board state persists in `~/.bridge/boards/fleet.json`; archived cards in
   `~/.bridge/boards/fleet.archive.jsonl`.
 
