@@ -78,7 +78,7 @@ async function main() {
         parse_mode: 'Markdown'
       });
       if (!res.ok) { console.error('Error:', res.description); process.exit(1); }
-      console.log(`Sent to ${chatId} at ${new Date(res.result.date * 1000).toISOString()}`);
+      console.log(`Sent to ${chatId} message_id=${res.result.message_id} at ${new Date(res.result.date * 1000).toISOString()}`);
       break;
     }
 
@@ -96,7 +96,7 @@ async function main() {
         parse_mode: 'HTML'
       });
       if (!res.ok) { console.error('Error:', res.description); process.exit(1); }
-      console.log(`Sent to ${chatId} at ${new Date(res.result.date * 1000).toISOString()}`);
+      console.log(`Sent to ${chatId} message_id=${res.result.message_id} at ${new Date(res.result.date * 1000).toISOString()}`);
       break;
     }
 
@@ -139,7 +139,24 @@ async function main() {
 
       const res = await tgForm(method, formData);
       if (!res.ok) { console.error('Error:', res.description); process.exit(1); }
-      console.log(`Sent ${fileName} to ${chatId}`);
+      console.log(`Sent ${fileName} to ${chatId} message_id=${res.result.message_id}`);
+      break;
+    }
+
+    case 'delete': {
+      const chatId = args[1];
+      const messageId = args[2];
+
+      if (!chatId || !messageId) {
+        return console.error('Usage: telegram-cli delete <chat_id> <message_id>');
+      }
+
+      const res = await tg('deleteMessage', {
+        chat_id: chatId,
+        message_id: Number(messageId)
+      });
+      if (!res.ok) { console.error('Error:', res.description); process.exit(1); }
+      console.log(`Deleted message_id=${messageId} from ${chatId}`);
       break;
     }
 
@@ -152,6 +169,7 @@ Commands:
   send <chat_id> <message>              Send message (Markdown)
   send-html <chat_id> <message>         Send message (HTML)
   send-file <chat_id> <file> [caption]  Send file/photo
+  delete <chat_id> <message_id>         Delete a message sent by the bot
 
 Environment:
   TELEGRAM_BOT_TOKEN    Bot token (required)
