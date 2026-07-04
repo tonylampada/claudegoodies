@@ -28,6 +28,8 @@ No Done: cards leave by archive (merge = archive, reason `merged`; captain dismi
 | `worker.id` | the dispatched task id — links fleet work to its card |
 | `worker.state` | lease from **evidence**: status lines, turn-end activity — never screen-pane sampling. Lease expiry → honest `idle` |
 
+**Creating a card is not a demand.** A captain-created card is the captain organizing thought; the `card-created` feed item is awareness only. The agent acts when the captain speaks in a thread or main chat, never inferring a demand from a card's existence.
+
 ## Flow — two loops, the agent in the middle
 
 ```mermaid

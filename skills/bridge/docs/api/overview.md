@@ -53,7 +53,24 @@ Two separate things, never conflated: **the worker attached to the card** (may n
 
 `worker.*` answers "who is working this card and are they alive?" (no dispatched work = `absent`); `owed` answers "is the agent being responsive in this thread?". Independent — a worker can be `working` while the agent owes a reply, and vice versa.
 
+`owed` requires an actual user thread message: a freshly created card with an empty thread owes nothing. Demand arrives only as a chat/thread message, never from a card's existence.
+
 UI mapping (draft): `worker.state` → stripe (green pulsing = working, gray = idle, amber = needs-you, none = absent); `owed` → "agent owes you a reply" marker; `unread` → badge/bold. No other status source exists.
+
+### Notification — the user's bell
+
+Not a stored entity: the bell is a **derived view of everything the user hasn't seen yet** — same family as `owed`/`unread`; nobody writes it, nothing stored. One mechanism (the per-user read state that already derives `unread`), two scopes:
+
+| source | notifies when | clears when |
+|---|---|---|
+| level-1 event on a card | lands after the user's last read of that card | the user opens the card |
+| agent reply in a card thread | same | the user opens the card |
+| agent message in main chat | lands after the user's last view of main chat | the user opens main chat |
+
+- Bell count = unseen items, grouped one line per card (+ one for main chat), newest first; per-card `unread` is this same derivation scoped to one card — the bell is the board-scoped sum.
+- Level-2 events NEVER notify — timeline only.
+- Clearing is reading. No dismiss operation, no notification objects to garbage-collect; the timeline stays the only history.
+- Delivery (sound, browser push, badge style) is a UI concern, outside this concept; the concept is only the derived unseen set.
 
 ### Tag — a shared label
 
