@@ -16,12 +16,19 @@ function tileHtml(c) {
   const owner = at.owner || '';
   const msgs = (c.thread || []).length;
   const unread = cardUnread(c);
+  // agent-working animation: SAME source as the chat typing bubble
+  // (S.awaiting, keyed 'card:<id>'), so tile and chat can never drift. Takes
+  // priority over the unread dot — one unambiguous corner indicator.
+  const working = S.awaiting.has('card:' + c.id);
+  const cornerInd = working
+    ? '<span class="t-typing" title="agent is working on this"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span></span>'
+    : (unread ? '<span class="t-unread" title="' + unread + ' unread"></span>' : '');
   const hasLink = Object.entries(at).some(([k, v]) => k !== 'owner' && /^https?:\/\//.test(String(v)));
   const labels = (c.labels || []).map((n) => labelChipHtml(n, filterSelected('label', n))).join('');
   return '<div class="tile' + (c.id === S.openCardId ? ' open' : '') + '" draggable="true" data-id="' + esc(c.id) + '">' +
     '<div class="t-row1"><span class="t-emoji">' + esc(cardEmoji(c)) + '</span>' +
     '<span class="t-title">' + esc(c.title || c.id) + '</span>' +
-    (unread ? '<span class="t-unread" title="' + unread + ' unread"></span>' : '') + '</div>' +
+    cornerInd + '</div>' +
     (labels ? '<div class="t-labels">' + labels + '</div>' : '') +
     '<div class="t-foot">' +
     (owner ? '<span class="t-owner' + (filterSelected('owner', owner) ? ' active' : '') + '" data-owner="' + esc(owner) +
