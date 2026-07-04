@@ -2,11 +2,15 @@
 import { S, card, render, toggleFilter, filterSelected } from './state.js';
 import { esc, hhmm, ago, cardEmoji, ownerColor, KIND_EMOJI } from './util.js';
 import { md } from './md.js';
+import { api } from './api.js';
 import { labelChipHtml, labelColor, openLabelPicker, saveCardLabels } from './labels.js';
 import { openCardThread } from './chat.js';
 import { openMoveMenu } from './board.js';
 
 const el = document.getElementById('detail');
+const titleEl = document.getElementById('dt-title');
+const titleInput = document.getElementById('dt-title-input');
+let editingTitle = false; // true while the inline title editor is open (guards re-render clobber)
 
 export function openDetail(id) {
   S.openCardId = id;
@@ -14,6 +18,7 @@ export function openDetail(id) {
 }
 export function closeDetail() {
   S.openCardId = null;
+  if (editingTitle) stopTitleEdit();
   el.hidden = true;
   render();
 }
@@ -35,6 +40,39 @@ document.getElementById('dt-menu-btn').onclick = (e) => {
   }
 };
 
+// ---------- inline title rename ----------
+function startTitleEdit() {
+  const c = card(S.openCardId);
+  if (!c || editingTitle) return;
+  editingTitle = true;
+  titleInput.value = c.title || c.id;
+  titleEl.hidden = true;
+  titleInput.hidden = false;
+  titleInput.focus();
+  titleInput.select();
+}
+function stopTitleEdit() {
+  editingTitle = false;
+  titleInput.hidden = true;
+  titleEl.hidden = false;
+}
+async function commitTitleEdit() {
+  if (!editingTitle) return;
+  const c = card(S.openCardId);
+  const to = titleInput.value.trim();
+  stopTitleEdit();
+  if (!c) return;
+  if (!to || to === (c.title || '')) { render(); return; } // reject empty / no-op
+  try { await api.patchCard(c.id, { title: to }); } // SSE board push repaints tile + detail live
+  catch (e) { alert(e.message); render(); }
+}
+titleEl.onclick = startTitleEdit;
+titleInput.onkeydown = (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); commitTitleEdit(); }
+  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); stopTitleEdit(); render(); }
+};
+titleInput.onblur = commitTitleEdit;
+
 function attrHtml(k, v) {
   const isUrl = /^https?:\/\//.test(String(v));
   const val = isUrl
@@ -50,7 +88,7 @@ export function renderDetail() {
   el.hidden = false;
 
   document.getElementById('dt-emoji').textContent = cardEmoji(c);
-  document.getElementById('dt-title').textContent = c.title || c.id;
+  if (!editingTitle) titleEl.textContent = c.title || c.id; // don't clobber an in-progress rename
   document.getElementById('dt-sub').textContent = c.id + ' · created ' + ago(c.created) + ' ago · updated ' + ago(c.updated) + ' ago';
 
   // attributes header (emoji shown up top already; owner gets its color)
