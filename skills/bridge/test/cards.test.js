@@ -135,6 +135,7 @@ test('card archive: appended to archive jsonl, removed from board, board-level e
       .map((l) => JSON.parse(l));
     assert.strictEqual(lines.length, 1);
     assert.strictEqual(lines[0].reason, 'merged');
+    assert.strictEqual('note' in lines[0], false); // exact enum value: no note needed
     assert.strictEqual(lines[0].actor, 'agent');
     assert.strictEqual(lines[0].card.id, 'shipped-thing');
     assert.strictEqual(lines[0].card.title, 'Shipped thing');
@@ -147,6 +148,35 @@ test('card archive: appended to archive jsonl, removed from board, board-level e
     // archiving an unknown card is a 404
     const bad = await s.api('POST', '/api/cards/ghost/archive', {});
     assert.strictEqual(bad.status, 404);
+  } finally {
+    await s.stop();
+  }
+});
+
+test('archive reason maps to the merged|killed enum; free text is preserved as note', async () => {
+  const s = await startServerWithColumns();
+  try {
+    // legacy-compat mapping (retire in sync rewrite): "merge" anywhere -> merged,
+    // anything else (or nothing) -> killed; original text rides as note.
+    await s.api('POST', '/api/cards', { title: 'A' });
+    await s.api('POST', '/api/cards', { title: 'B' });
+    await s.api('POST', '/api/cards', { title: 'C' });
+    await s.api('POST', '/api/cards/a/archive', { reason: 'PR merged upstream' });
+    await s.api('POST', '/api/cards/b/archive', { reason: 'not needed anymore' });
+    await s.api('POST', '/api/cards/c/archive', {});
+    const recs = fs
+      .readFileSync(path.join(s.dir, 'boards', s.board + '.archive.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const by = (id) => recs.find((r) => r.card.id === id);
+    assert.strictEqual(by('a').reason, 'merged');
+    assert.strictEqual(by('a').note, 'PR merged upstream');
+    assert.strictEqual(by('b').reason, 'killed');
+    assert.strictEqual(by('b').note, 'not needed anymore');
+    assert.strictEqual(by('c').reason, 'killed'); // no reason given: dismissed
+    assert.strictEqual('note' in by('c'), false);
+    // the human-readable event keeps the original text
+    const board = (await s.api('GET', '/api/board')).body;
+    assert.ok(board.events.some((e) => e.card === 'a' && e.text === 'PR merged upstream'));
   } finally {
     await s.stop();
   }

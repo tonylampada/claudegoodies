@@ -102,24 +102,27 @@ test('long-poll blocks until feedback arrives, then delivers it', async () => {
   }
 });
 
-test('legacy local cursor file is adopted as the initial ack on first run', async () => {
+test('the ack file is the only cursor: a stray legacy .cursor file is ignored', async () => {
   const s = await startServer({
     seed: (dir) => {
       const boards = path.join(dir, 'boards');
       fs.mkdirSync(boards, { recursive: true });
-      // pre-upgrade state: a CLI-side cursor and feedback already on disk
+      // a leftover pre-rebuild CLI cursor must have no effect on delivery
       fs.writeFileSync(path.join(boards, 'testboard.cursor'), '2');
       const lines = [
-        { seq: 1, ts: '2026-01-01T00:00:00.000Z', kind: 'message', target: 'chat', text: 'old one' },
-        { seq: 2, ts: '2026-01-01T00:00:01.000Z', kind: 'message', target: 'chat', text: 'old two' },
-        { seq: 3, ts: '2026-01-01T00:00:02.000Z', kind: 'message', target: 'chat', text: 'new three' },
+        { seq: 1, ts: '2026-01-01T00:00:00.000Z', kind: 'message', target: 'chat', text: 'one' },
+        { seq: 2, ts: '2026-01-01T00:00:01.000Z', kind: 'message', target: 'chat', text: 'two' },
+        { seq: 3, ts: '2026-01-01T00:00:02.000Z', kind: 'message', target: 'chat', text: 'three' },
       ];
       fs.writeFileSync(path.join(boards, 'testboard.feedback.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
     },
   });
   try {
-    const r = await s.api('GET', '/api/poll?nowait=1');
-    assert.deepStrictEqual(r.body.events.map((e) => e.seq), [3]); // 1-2 considered delivered under the old model
+    let r = await s.api('GET', '/api/poll?nowait=1');
+    assert.deepStrictEqual(r.body.events.map((e) => e.seq), [1, 2, 3]); // nothing acked yet
+    await s.api('POST', '/api/poll/ack', { seq: 3 });
+    r = await s.api('GET', '/api/poll?nowait=1');
+    assert.deepStrictEqual(r.body.events, []); // only the ack file commits
   } finally {
     await s.stop();
   }

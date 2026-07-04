@@ -4,8 +4,6 @@ export const USER = 'user';
 
 export const S = {
   doc: null,               // full board doc from the server
-  awaiting: new Set(),     // targets awaiting an agent reply (typing indicator)
-  stale: new Set(),        // awaiting targets past the server's stale threshold (may be stuck)
   connected: false,
   chatMode: { mode: 'main' },   // {mode:'main'} | {mode:'card', id}
   openCardId: null,        // detail panel
@@ -39,6 +37,45 @@ export function threadUnread(target, msgs) {
   return (msgs || []).filter((m) => m.author !== USER && (!ts || m.ts > ts)).length;
 }
 export function cardUnread(c) { return threadUnread('card:' + c.id, c.thread); }
+
+// ---------- status (card.status is the single source; no other status feed) ----------
+export function cardStatus(c) {
+  return (c && c.status) || { worker: { id: null, state: 'absent' }, owed: false, unread: false };
+}
+// owed on a target: cards carry the server-derived status.owed; the main chat uses
+// the same latest-message rule, derived here from the doc.
+export function targetOwed(target) {
+  if (target === 'chat') {
+    const ch = (S.doc && S.doc.chat) || [];
+    const last = ch[ch.length - 1];
+    return !!(last && last.author === USER);
+  }
+  const c = card(target.slice(5));
+  return !!c && !!cardStatus(c).owed;
+}
+// "may be stuck": owed with no agent reply for longer than the stale threshold.
+// Purely client-derived from thread timestamps; the periodic re-render refreshes it.
+const OWED_STALE_MS = 180000;
+function owedSinceTs(msgs) {
+  let since = null;
+  for (const m of msgs || []) {
+    if (m.author === USER) { if (since == null) since = m.ts; }
+    else since = null;
+  }
+  return since;
+}
+export function targetOwedStale(target) {
+  if (!targetOwed(target)) return false;
+  const msgs = target === 'chat' ? ((S.doc && S.doc.chat) || []) : ((card(target.slice(5)) || {}).thread || []);
+  const since = owedSinceTs(msgs);
+  return !!since && Date.now() - new Date(since).getTime() >= OWED_STALE_MS;
+}
+export function owedTargets() {
+  const out = [];
+  if (targetOwed('chat')) out.push('chat');
+  for (const c of cards()) if (cardStatus(c).owed) out.push('card:' + c.id);
+  return out;
+}
 
 // the unified event stream: board-level events + every card's events, by seq
 export function allEvents() {

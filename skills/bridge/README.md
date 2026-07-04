@@ -11,10 +11,10 @@ ui/             static UI (index.html + app.css + js/ ES modules), served by the
 migrate-v1.js   one-shot v1 → v2 board converter
 ```
 
-State: `~/.bridge/boards/<name>.json` (board), `<name>.archive.jsonl` (killed cards,
+State: `~/.bridge/boards/<name>.json` (board), `<name>.archive.jsonl` (archived cards,
 append-only), `<name>.feedback.jsonl` (human→agent queue), `<name>.feedback.ack`
-(committed ack cursor; `<name>.cursor` is the legacy CLI cursor, read once at upgrade),
-`~/.bridge/config.json` (user config, e.g. TTS voice filter).
+(the committed ack cursor — the only cursor), `~/.bridge/config.json` (user config,
+e.g. TTS voice filter).
 
 ## Data model (v2)
 
@@ -54,11 +54,11 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | `GET /` , `GET /ui/*` | the web UI |
 | `GET /api/board` | full board doc; every card carries a derived `status` (see Status) |
 | `GET /api/cards/<id>` | one card, with derived `status` |
-| `GET /api/status` | `{board, port, cards, seq, feedback_seq, feedback_ack, awaiting, stale, pid}` |
+| `GET /api/status` | `{board, port, cards, seq, feedback_seq, feedback_ack, pid}` |
 | `GET /api/archive?limit=N` | last N archived records, newest first |
 | `GET /api/notifications?user=U` | level-1 events with read flags, `{items, unread}` |
 | `GET /api/config` | user config (voice filter) |
-| `GET /api/events` | SSE: `board` (full doc on every change) + `status` (`{awaiting, stale}`) |
+| `GET /api/events` | SSE: `board` (full doc on every change) |
 | `GET /api/poll[?since=N][&nowait=1]` | long-poll the human→agent feedback queue |
 | `POST /api/poll/ack` | `{seq}` — commit the ack cursor (see Feedback queue) |
 
@@ -70,7 +70,7 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | `PATCH /api/cards/<id>` | `{title?, body?, labels?, attributes?}` | attributes merge per key; value `null` deletes a key. No event is emitted — pair with an explicit event when the change is signal-worthy. |
 | `POST /api/cards/<id>/move` | `{column, actor?, level?, kind?}` | records a timeline event with the actor. Default level: agent move = 1 (notifies the human), user move = 2. User moves push `card-moved` feedback. |
 | `POST /api/cards/<id>/events` | `{text, level?, kind?, actor?}` | append event (default level 2 / kind info) |
-| `POST /api/cards/<id>/archive` | `{actor?, reason?, level?, kind?}` | kill = archive: snapshot to the archive file, remove from board, level-1 ✅ board event by default |
+| `POST /api/cards/<id>/archive` | `{actor?, reason?, level?, kind?}` | kill = archive: snapshot to the archive file, remove from board, level-1 ✅ board event by default. Stored `reason` is the enum `merged \| killed` (free text mentioning "merge" maps to `merged`, else `killed`; the original text is preserved as `note`) |
 | `POST /api/cards/<id>/status` | `{worker: {id, state} \| null, ttl?}` | `status.set` — link a worker to the card as a lease. `state` ∈ `absent\|idle\|working\|needs-you`; `ttl` in seconds (default 600; `BRIDGE_WORKER_TTL_SECS`). `null` worker or state `absent` unlinks. |
 
 ### Status
@@ -85,8 +85,11 @@ Every card goes out with one derived `status` object — `{worker: {id, state}, 
 - `unread` — server-derived: true iff a level-1 event or an agent reply landed after the
   user's last read of the card (`POST /api/read`).
 
-The `awaiting`/`stale` arrays on `GET /api/status` and the SSE `status` event are a legacy
-mapping derived from `owed` (kept for the current UI; retired at the API cut).
+`card.status` is the single read source for worker/owed/unread — nothing is mirrored into
+attributes. One feeder-compat write shim remains (retire in sync rewrite): a `card.patch`
+or create carrying `attributes.worker` is translated server-side into a `status.set`
+lease (default TTL; worker id = existing lease id or the card id) and the key never
+lands in `card.attributes`.
 
 ### Board
 
@@ -101,8 +104,8 @@ mapping derived from `owed` (kept for the current UI; retired at the API cut).
 
 | Route | Body | Notes |
 |---|---|---|
-| `POST /api/message` | `{target, text\|text_md, author?}` | agent → human. Target `chat` or `card:<id>`. A main-chat agent message also emits a level-1 💡 event (free-form notification). Clears the target's "awaiting" flag. |
-| `POST /api/feedback` | `{target, text}` | human → agent: appends to the thread, queues a durable `message` feedback, sets "awaiting" (typing indicator). A target awaiting longer than the stale threshold (180s; `BRIDGE_AWAITING_STALE_SECS` overrides) is also reported `stale` — the UI shows a "may be stuck" warning instead of healthy typing. |
+| `POST /api/message` | `{target, text\|text_md, author?}` | agent → human. Target `chat` or `card:<id>`. A main-chat agent message also emits a level-1 💡 event (free-form notification). An agent reply clears the target's derived `owed`. |
+| `POST /api/feedback` | `{target, text}` | human → agent: appends to the thread and queues a durable `message` feedback. The latest-message-is-the-user's rule flips the target's derived `owed` (the UI's "agent owes you a reply" balloon; owed unanswered past ~180s renders as "may be stuck", derived client-side). |
 | `POST /api/notifications/read` | `{user?, seqs?[], all?}` | persist notification read state |
 | `POST /api/read` | `{user?, target, ts?}` | persist a thread read marker (unread badges) |
 
@@ -116,8 +119,7 @@ advances that cursor. Delivery is committed only by `POST /api/poll/ack {seq}`
 (`bridge-axi ack <seq>`), sent after the agent has handled the feedback; until then
 every poll re-offers the same events, so an agent/poller killed mid-handling loses
 nothing (duplicates are possible — dedupe by `seq`). The queue is durable jsonl; the
-ack cursor persists in `<name>.feedback.ack` (initialized once from the legacy
-`<name>.cursor` on upgrade).
+ack cursor persists in `<name>.feedback.ack`, the only cursor.
 
 ## UI notes
 

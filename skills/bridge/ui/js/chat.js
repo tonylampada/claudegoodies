@@ -1,6 +1,6 @@
 // chat panel: unified main feed (messages + card-thread bubbles anchored at thread
 // start), whole-window mode switch into a card thread, premium composer.
-import { S, card, cards, render, threadUnread, USER } from './state.js';
+import { S, card, cards, render, threadUnread, targetOwed, targetOwedStale, USER } from './state.js';
 import { api } from './api.js';
 import { esc, hhmm, dayLabel, cardEmoji } from './util.js';
 import { md } from './md.js';
@@ -63,16 +63,17 @@ function msgHtml(m) {
     '<span class="ts">' + who + hhmm(m.ts) + '</span>' + speakBtn + '</div>';
 }
 function typingHtml(stale) {
-  // stale = awaiting past the server threshold: a DISTINCT "may be stuck" state,
-  // static and amber, so a dropped message never looks like healthy typing forever
+  // the "agent owes you a reply" balloon (card.status.owed / the main-chat rule).
+  // stale = owed past the threshold: a DISTINCT "may be stuck" state, static and
+  // amber, so a dropped message never looks like a healthy pending reply forever
   if (stale) {
     return '<div class="msg agent typing stale" title="no response for a while — the message may not have reached the agent">' +
       '<span class="twarn">⚠</span>' +
       '<span class="lbl">no response yet — the agent may be stuck</span></div>';
   }
-  return '<div class="msg agent typing" title="the agent is working on this">' +
+  return '<div class="msg agent typing" title="the agent owes you a reply here">' +
     '<span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>' +
-    '<span class="lbl">agent is working…</span></div>';
+    '<span class="lbl">agent owes you a reply…</span></div>';
 }
 function bubbleHtml(c) {
   const n = (c.thread || []).length;
@@ -134,7 +135,7 @@ export function renderChat() {
   } else {
     for (const it of mainFeedItems()) push(it.ts, it.html);
   }
-  if (S.awaiting.has(currentTarget())) html += typingHtml(S.stale.has(currentTarget()));
+  if (targetOwed(currentTarget())) html += typingHtml(targetOwedStale(currentTarget()));
   feedEl.innerHTML = html || '<div class="empty">no messages yet</div>';
   if (switched) scrollFeedToBottom(); // deferred: the feed may still be hidden this frame
   else if (pinned) feedEl.scrollTop = feedEl.scrollHeight;

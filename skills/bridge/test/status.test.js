@@ -224,60 +224,89 @@ test('cli: bridge-axi status verb sets and reads the worker lease', async () => 
   }
 });
 
-// legacy-compat coverage: the v2 UI's awaiting/stale + attributes.worker inputs
-// are now thin mappings from the status model; retire with the API cut.
-test('legacy awaiting/stale are derived from owed and survive restart', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-test-'));
-  const env = { BRIDGE_AWAITING_STALE_SECS: '1' };
-  let s = null;
+test('board payload: every card carries derived status; worker is never mirrored into attributes', async () => {
+  const s = await startServerWithColumns();
   try {
-    s = await startServerWithColumns({ dir, env });
-    await s.api('POST', '/api/cards', { title: 'Ask' });
-    await s.api('POST', '/api/feedback', { target: 'chat', text: 'hello?' });
-    await s.api('POST', '/api/feedback', { target: 'card:ask', text: 'and here?' });
-    let st = (await s.api('GET', '/api/status')).body;
-    assert.deepStrictEqual(st.awaiting.sort(), ['card:ask', 'chat']);
-    assert.deepStrictEqual(st.stale, []);
-
-    await s.stop();
-    s = await startServer({ dir, env }); // the old in-memory Map lost these on restart
-    st = (await s.api('GET', '/api/status')).body;
-    assert.deepStrictEqual(st.awaiting.sort(), ['card:ask', 'chat']);
-
-    await sleep(1100); // past the stale threshold, measured from the unanswered message
-    st = (await s.api('GET', '/api/status')).body;
-    assert.deepStrictEqual(st.stale.sort(), ['card:ask', 'chat']);
-
-    await s.api('POST', '/api/message', { target: 'card:ask', text: 'here!' });
-    st = (await s.api('GET', '/api/status')).body;
-    assert.deepStrictEqual(st.awaiting, ['chat']);
+    await s.api('POST', '/api/cards', { title: 'Plain' });
+    await s.api('POST', '/api/cards', { title: 'Leased' });
+    await s.api('POST', '/api/cards/leased/status', { worker: { id: 'w1', state: 'working' } });
+    const b = (await s.api('GET', '/api/board')).body;
+    for (const c of b.cards) {
+      assert.ok(c.status && c.status.worker, c.id + ' carries status');
+      assert.strictEqual('worker' in (c.attributes || {}), false, c.id + ' has no attributes.worker');
+    }
+    assert.strictEqual(b.cards.find((c) => c.id === 'plain').status.worker.state, 'absent');
+    assert.strictEqual(b.cards.find((c) => c.id === 'leased').status.worker.state, 'working');
   } finally {
-    if (s) await s.stop();
-    fs.rmSync(dir, { recursive: true, force: true });
+    await s.stop();
   }
 });
 
-test('legacy attributes.worker view mirrors the lease; feeder-written attrs untouched without one', async () => {
+// feeder-compat write path (legacy-compat: retire in sync rewrite): the live
+// feeder still writes the stripe as an attributes.worker patch/create value; the
+// server translates it into the status.set lease, and card.status stays the
+// single READ source.
+test('feeder-compat: patching attributes.worker becomes a lease with the default ttl; never stored', async () => {
+  const s = await startServerWithColumns({ env: { BRIDGE_WORKER_TTL_SECS: '0.3' } });
+  try {
+    await s.api('POST', '/api/cards', { title: 'Task' });
+    await s.api('PATCH', '/api/cards/task', { attributes: { worker: 'working', repo: 'alpha' } });
+    let c = (await s.api('GET', '/api/cards/task')).body;
+    assert.strictEqual(c.status.worker.state, 'working');
+    assert.strictEqual(c.status.worker.id, 'task'); // no id in the legacy write: card id stands in
+    assert.deepStrictEqual(c.attributes, { repo: 'alpha' }); // worker consumed, sibling attrs kept
+
+    await sleep(450); // the shim uses the server's default ttl, so the lease decays
+    c = (await s.api('GET', '/api/cards/task')).body;
+    assert.strictEqual(c.status.worker.state, 'idle');
+
+    // a real status.set id survives later feeder patches
+    await s.api('POST', '/api/cards/task/status', { worker: { id: 'real-1', state: 'working' } });
+    await s.api('PATCH', '/api/cards/task', { attributes: { worker: 'needs-you' } });
+    c = (await s.api('GET', '/api/cards/task')).body;
+    assert.strictEqual(c.status.worker.id, 'real-1');
+    assert.strictEqual(c.status.worker.state, 'needs-you');
+
+    // the feeder's delete (worker: null) unlinks
+    await s.api('PATCH', '/api/cards/task', { attributes: { worker: null } });
+    c = (await s.api('GET', '/api/cards/task')).body;
+    assert.deepStrictEqual(c.status.worker, { id: null, state: 'absent' });
+    assert.strictEqual('worker' in c.attributes, false);
+  } finally {
+    await s.stop();
+  }
+});
+
+test('feeder-compat: create with attributes.worker births the lease', async () => {
   const s = await startServerWithColumns();
   try {
-    // feeder path (no lease): attribute passes through as written
-    await s.api('POST', '/api/cards', { title: 'Old' });
-    await s.api('PATCH', '/api/cards/old', { attributes: { worker: 'needs-you' } });
-    let b = (await s.api('GET', '/api/board')).body;
-    assert.strictEqual(b.cards.find((c) => c.id === 'old').attributes.worker, 'needs-you');
+    const r = await s.api('POST', '/api/cards', { title: 'Born busy', attributes: { worker: 'working', repo: 'beta' } });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.card.status.worker.state, 'working');
+    assert.strictEqual(r.body.card.status.worker.id, 'born-busy');
+    assert.deepStrictEqual(r.body.card.attributes, { repo: 'beta' });
+  } finally {
+    await s.stop();
+  }
+});
 
-    // lease path: the derived state (including decay) overrides the view
-    await s.api('POST', '/api/cards', { title: 'New' });
-    await s.api('POST', '/api/cards/new/status', { worker: { id: 'w1', state: 'working' }, ttl: 0.3 });
-    b = (await s.api('GET', '/api/board')).body;
-    assert.strictEqual(b.cards.find((c) => c.id === 'new').attributes.worker, 'working');
-    await sleep(450);
-    b = (await s.api('GET', '/api/board')).body;
-    assert.strictEqual(b.cards.find((c) => c.id === 'new').attributes.worker, 'idle');
-
-    await s.api('POST', '/api/cards/new/status', { worker: null });
-    b = (await s.api('GET', '/api/board')).body;
-    assert.strictEqual('worker' in b.cards.find((c) => c.id === 'new').attributes, false);
+test('feeder-compat: a stored legacy worker attribute is adopted as a lease on load', async () => {
+  const s = await startServer({
+    seed: (dir) => {
+      const boards = path.join(dir, 'boards');
+      fs.mkdirSync(boards, { recursive: true });
+      // pre-cut board file: stripe stored as an attribute, no status lease
+      fs.writeFileSync(path.join(boards, 'testboard.json'), JSON.stringify({
+        columns: [{ id: 'todo', title: 'To do' }],
+        cards: [{ id: 'old', title: 'Old', column: 'todo', attributes: { worker: 'needs-you', repo: 'gamma' } }],
+      }));
+    },
+  });
+  try {
+    const c = (await s.api('GET', '/api/cards/old')).body;
+    assert.strictEqual(c.status.worker.state, 'needs-you');
+    assert.strictEqual(c.status.worker.id, 'old');
+    assert.deepStrictEqual(c.attributes, { repo: 'gamma' });
   } finally {
     await s.stop();
   }

@@ -50,7 +50,6 @@ for (let i = 0; i < argv.length; i++) {
   else positional.push(a);
 }
 const BASE = 'http://127.0.0.1:' + opts.port;
-const CURSOR_FILE = path.join(BOARDS_DIR, opts.board + '.cursor');
 const PID_FILE = path.join(BRIDGE_DIR, 'server-' + opts.port + '.pid');
 const CONFIG_FILE = path.join(BRIDGE_DIR, 'config.json');
 
@@ -93,11 +92,6 @@ function parseAttrs(list) {
     out[kv.slice(0, i)] = v === '' ? null : v; // key= deletes the attribute
   }
   return out;
-}
-// legacy local poll cursor — no longer written; the committed ack cursor lives
-// server-side now (see `ack`). Read only as a fallback against an old server.
-function readCursor() {
-  try { return parseInt(fs.readFileSync(CURSOR_FILE, 'utf8'), 10) || 0; } catch (e) { return 0; }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function hhmm(iso) { try { return new Date(iso).toISOString().slice(5, 16).replace('T', ' '); } catch (e) { return ''; } }
@@ -253,7 +247,10 @@ async function cmdArchive() {
 async function cmdArchived() {
   const r = await request('GET', '/api/archive?limit=' + (parseInt(positional[0], 10) || 20));
   if (opts.json) return console.log(JSON.stringify(r.archive, null, 2));
-  for (const rec of r.archive) console.log(hhmm(rec.ts) + '  ' + rec.card.id + '  ' + rec.card.title + (rec.reason ? '  (' + rec.reason + ')' : ''));
+  for (const rec of r.archive) {
+    const why = rec.reason ? rec.reason + (rec.note ? ': ' + rec.note : '') : '';
+    console.log(hhmm(rec.ts) + '  ' + rec.card.id + '  ' + rec.card.title + (why ? '  (' + why + ')' : ''));
+  }
 }
 
 async function cmdSay() {
@@ -315,10 +312,8 @@ async function cmdStatus() {
   }
   const st = await serverUp();
   if (!st) { console.log('server: down (port ' + opts.port + ')'); process.exit(1); }
-  const ack = st.feedback_ack != null ? st.feedback_ack : readCursor(); // old server fallback
-  const pending = Math.max(0, st.feedback_seq - ack);
-  const awaiting = Array.isArray(st.awaiting) ? st.awaiting.length : 0;
-  console.log('server: up  board=' + st.board + '  cards=' + st.cards + '  pending-feedback=' + pending + '  awaiting-reply=' + awaiting + '  url=http://localhost:' + opts.port + '/');
+  const pending = Math.max(0, st.feedback_seq - (st.feedback_ack || 0));
+  console.log('server: up  board=' + st.board + '  cards=' + st.cards + '  pending-feedback=' + pending + '  url=http://localhost:' + opts.port + '/');
 }
 
 async function cmdStop() {
@@ -385,7 +380,9 @@ if (!commands[cmd]) {
     '                                         kinds: alert question handoff success info\n' +
     '                                         level 1 notifies the human; level 2 = timeline only\n' +
     '  notify [--kind K] [--text-file f|-]    board-level notification (no card)\n' +
-    '  archive <card-id> [--reason "..."]     kill = archive (append-only file, off the board)\n' +
+    '  archive <card-id> [--reason "..."]     kill = archive (append-only file, off the board);\n' +
+    '                                         reason stored as merged|killed (text mentioning "merge"\n' +
+    '                                         maps to merged), original text kept as note\n' +
     '  say <chat|card:ID> [--text-file f|-]   post a chat message (main chat says also notify)\n' +
     '  columns <file.json|->                  replace the column frame [{id,title}] (idempotent)\n' +
     '\nloop (at-least-once):\n' +

@@ -1,5 +1,5 @@
 // boot: SSE, header controls, mobile tabs, render orchestration
-import { S, onRender, render, cards, cardUnread, threadUnread, notifUnreadCount, clearFilters, filtersActive } from './state.js';
+import { S, onRender, render, cards, cardUnread, threadUnread, notifUnreadCount, owedTargets, clearFilters, filtersActive } from './state.js';
 import { trackMessages } from './voice.js';
 import { renderBoard, newCardOpen, closeNewCard, closeMoveMenu } from './board.js';
 import { renderChat, onOpenCard as chatOnOpenCard } from './chat.js';
@@ -44,9 +44,10 @@ function syncFilterInputs() {
 // ---------- header: status dot ----------
 function renderStatusDot() {
   const el = document.getElementById('status-dot');
-  el.className = !S.connected ? '' : S.awaiting.size ? 'busy' : 'ok';
+  const owed = owedTargets().length;
+  el.className = !S.connected ? '' : owed ? 'busy' : 'ok';
   el.title = !S.connected ? 'disconnected — reconnecting…'
-    : S.awaiting.size ? 'agent working on ' + S.awaiting.size + ' message' + (S.awaiting.size > 1 ? 's' : '')
+    : owed ? 'agent owes a reply on ' + owed + ' conversation' + (owed > 1 ? 's' : '')
     : 'connected — agent idle';
 }
 
@@ -124,13 +125,6 @@ function connect() {
   es.addEventListener('board', (e) => {
     S.doc = JSON.parse(e.data);
     trackMessages(S.doc);
-    render();
-  });
-  es.addEventListener('status', (e) => {
-    const st = JSON.parse(e.data);
-    S.awaiting = new Set(st.awaiting || []);
-    S.stale = new Set(st.stale || []);
-    renderStatusDot();
     render();
   });
   es.onopen = () => { S.connected = true; renderStatusDot(); };

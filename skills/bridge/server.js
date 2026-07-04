@@ -18,8 +18,8 @@
 // Events are append-only and carry a global monotonic seq. The unified stream =
 // board.events + every card's events, ordered by seq. Notifications are the
 // level-1 slice of that stream; read state persists in board.reads (server-side).
-// Kill = archive: the card is snapshotted to <name>.archive.jsonl (append-only)
-// and removed from the board. No destructive delete.
+// Kill = archive: the card is snapshotted to <name>.archive.jsonl (append-only,
+// reason: merged|killed) and removed from the board. No destructive delete.
 'use strict';
 
 const http = require('http');
@@ -113,6 +113,10 @@ function normalizeBoard(doc) {
       const ok = w && typeof w === 'object' && w.id && WORKER_LEASE_STATES.includes(w.state);
       c.status = { worker: ok ? { id: String(w.id), state: w.state, expires: w.expires || null } : null };
     }
+    // legacy-compat: retire in sync rewrite — boards written before the API cut
+    // may still store the feeder's `worker` attribute; adopt it as a lease on load
+    // so existing stripes survive the upgrade off card.status alone.
+    if (c.attributes && 'worker' in c.attributes) adoptWorkerAttr(c, c.attributes);
   }
   // seq must top every stored event (defensive after hand edits)
   let max = b.seq || 0;
@@ -179,13 +183,8 @@ function pushFeedback(rec) {
 // So a poller that dies before the agent handles its lines re-offers the same
 // feedback on the next poll — duplicates are possible, loss is not (dedupe by seq).
 const ACK_FILE = path.join(BOARDS_DIR, opts.board + '.feedback.ack');
-const LEGACY_CURSOR_FILE = path.join(BOARDS_DIR, opts.board + '.cursor');
 function loadAck() {
   try { return parseInt(fs.readFileSync(ACK_FILE, 'utf8'), 10) || 0; }
-  catch (e) {}
-  // first run after upgrade: adopt the CLI's old local poll cursor so feedback
-  // already delivered under the old at-most-once model is not re-offered
-  try { return parseInt(fs.readFileSync(LEGACY_CURSOR_FILE, 'utf8'), 10) || 0; }
   catch (e) { return 0; }
 }
 let ackSeq = loadAck();
@@ -239,21 +238,10 @@ function cardStatus(card, user) {
   return { worker: derivedWorker(card), owed, unread };
 }
 // Serialization view: cards go out with the derived `status` attached; the
-// stored board keeps only the raw lease.
+// stored board keeps only the raw lease. `card.status` is the single READ source
+// for worker/owed/unread — nothing is mirrored into attributes.
 function publicCard(card, user) {
-  const status = cardStatus(card, user);
-  const out = Object.assign({}, card, { status });
-  // legacy-compat: retire in API cut — the current UI reads attributes.worker for
-  // the tile stripe; mirror the derived worker state into the view whenever a
-  // status lease record exists (cards never touched by status.set keep whatever
-  // the feeder wrote into attributes.worker).
-  if (card.status && 'worker' in card.status) {
-    const at = Object.assign({}, card.attributes);
-    if (status.worker.state === 'absent') delete at.worker;
-    else at.worker = status.worker.state;
-    out.attributes = at;
-  }
-  return out;
+  return Object.assign({}, card, { status: cardStatus(card, user) });
 }
 function publicBoard(user) {
   return Object.assign({}, board, { cards: board.cards.map((c) => publicCard(c, user)) });
@@ -281,58 +269,30 @@ function setStatus(card, body) {
   return { ok: true };
 }
 
-// legacy-compat: retire in API cut — the v2 UI reads SSE `status` events and the
-// `awaiting`/`stale` arrays on GET /api/status (typing balloon + "may be stuck").
-// Both are now a thin mapping FROM the status model: awaiting := targets where
-// `owed` (main chat uses the same latest-message rule), entered at the oldest
-// unanswered user message. Derived from persisted threads, so unlike the old
-// in-memory Map this survives a server restart.
-const AWAITING_STALE_SECS = parseInt(process.env.BRIDGE_AWAITING_STALE_SECS, 10) || 180;
-function owedSinceMs(thread) {
-  let since = null;
-  for (const m of thread || []) {
-    if (m.author === 'user') { if (since == null) since = Date.parse(m.ts); }
-    else since = null;
+// legacy-compat: retire in sync rewrite — the live feeder still writes the worker
+// stripe as a card attribute (`card.patch` / `card.create` with
+// attributes.worker: working|needs-you|idle, null to clear). Translate that one
+// write into the status.set lease (default TTL; worker id = the existing lease id
+// or the card id) so stripes stay live off card.status alone. The key never lands
+// in card.attributes; `card.status` stays the single READ source.
+function adoptWorkerAttr(card, attributes) {
+  if (!attributes || typeof attributes !== 'object' || !('worker' in attributes)) return;
+  const v = attributes.worker;
+  delete attributes.worker;
+  if (WORKER_LEASE_STATES.includes(v)) {
+    const id = (card.status && card.status.worker && card.status.worker.id) || card.id;
+    setStatus(card, { worker: { id, state: v } });
+  } else {
+    setStatus(card, { worker: null }); // null (delete) or unknown value: unlink
   }
-  return since;
-}
-function awaitingEntries() {
-  const out = [];
-  const cs = owedSinceMs(board.chat);
-  if (cs != null) out.push(['chat', cs]);
-  for (const c of board.cards) {
-    const s = owedSinceMs(c.thread);
-    if (s != null) out.push(['card:' + c.id, s]);
-  }
-  return out;
-}
-function awaitingTargets() { return awaitingEntries().map(([t]) => t); }
-function staleTargets() {
-  const cutoff = Date.now() - AWAITING_STALE_SECS * 1000;
-  return awaitingEntries().filter(([, t]) => t <= cutoff).map(([t]) => t);
-}
-function statusEvent() {
-  return 'event: status\ndata: ' + JSON.stringify({ awaiting: awaitingTargets(), stale: staleTargets() }) + '\n\n';
 }
 
 // ---------- SSE clients ----------
 const sseClients = new Set();
-let lastStaleKey = '';
 function broadcast() {
-  lastStaleKey = staleTargets().join('\n');
-  const payload = 'event: board\ndata: ' + JSON.stringify(publicBoard('user')) + '\n\n' + statusEvent();
+  const payload = 'event: board\ndata: ' + JSON.stringify(publicBoard('user')) + '\n\n';
   for (const res of sseClients) res.write(payload);
 }
-function broadcastStatus() {
-  lastStaleKey = staleTargets().join('\n');
-  const payload = statusEvent();
-  for (const res of sseClients) res.write(payload);
-}
-// Staleness develops with time, not with events — push a status when a target
-// crosses the threshold (or a stale one clears), without rebroadcasting otherwise.
-setInterval(() => {
-  if (staleTargets().join('\n') !== lastStaleKey) broadcastStatus();
-}, 5000).unref();
 setInterval(() => { for (const res of sseClients) res.write(': ping\n\n'); }, 25000).unref();
 
 // ---------- helpers ----------
@@ -406,6 +366,7 @@ function createCard(body, actorDefault) {
     created: now(), updated: now(), threadStart: null,
     events: [], thread: [],
   };
+  adoptWorkerAttr(card, card.attributes); // legacy-compat: retire in sync rewrite
   card.events.push(mkEvent({ text: 'created in ' + columnTitle(column), actor, level: 2 }, { kind: 'info' }));
   board.cards.push(card);
   registerCardLabels();
@@ -436,6 +397,7 @@ function patchCard(card, body) {
   if (body.body !== undefined) card.body = String(body.body);
   if (Array.isArray(body.labels)) card.labels = body.labels.filter((l) => typeof l === 'string' && l);
   if (body.attributes && typeof body.attributes === 'object') {
+    adoptWorkerAttr(card, body.attributes); // legacy-compat: retire in sync rewrite
     for (const [k, v] of Object.entries(body.attributes)) {
       if (v === null) delete card.attributes[k];
       else card.attributes[k] = v;
@@ -447,13 +409,18 @@ function patchCard(card, body) {
 
 function archiveCard(card, body, actorDefault) {
   const actor = String((body && body.actor) || actorDefault || 'agent').slice(0, 60);
-  const reason = String((body && body.reason) || '').slice(0, 500);
+  // Archive reason is the enum `merged | killed` (merged = landed, killed = dismissed).
+  // legacy-compat: retire in sync rewrite — callers still send a free string; map it
+  // (mentions "merge" → merged, else killed) and preserve the original text as `note`.
+  const raw = String((body && body.reason) || '').slice(0, 500);
+  const reason = /merge/i.test(raw) ? 'merged' : 'killed';
   const rec = { ts: now(), actor, reason, card };
+  if (raw && raw !== reason) rec.note = raw;
   fs.appendFileSync(ARCHIVE_FILE, JSON.stringify(rec) + '\n');
   board.cards = board.cards.filter((c) => c.id !== card.id);
   // The kill lands on the board-level stream (the card is gone) with a card reference.
   const ev = mkEvent(
-    { level: body && body.level, kind: body && body.kind, actor, text: reason || 'archived: ' + card.title },
+    { level: body && body.level, kind: body && body.kind, actor, text: raw || 'archived: ' + card.title },
     { level: 1, kind: 'success' });
   ev.card = card.id; ev.cardTitle = card.title; ev.archived = true;
   board.events.push(ev);
@@ -493,7 +460,6 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         board: opts.board, port: opts.port, cards: board.cards.length, seq: board.seq,
         feedback_seq: fseq, feedback_ack: ackSeq,
-        awaiting: awaitingTargets(), stale: staleTargets(), // legacy-compat: retire in API cut (derived from owed)
         pid: process.pid,
       });
     }
@@ -611,7 +577,7 @@ const server = http.createServer(async (req, res) => {
         const ev = mkEvent({ text: text.slice(0, 200), actor: msg.author, level: body.level, kind: body.kind }, { level: 1, kind: 'info' });
         board.events.push(ev);
       }
-      saveBoard(); broadcast(); // an agent reply clears derived owed/awaiting via broadcast
+      saveBoard(); broadcast(); // an agent reply clears derived owed via broadcast
       return sendJson(res, 200, { ok: true });
     }
     if (route === 'POST /api/feedback') { // human -> agent
@@ -629,7 +595,7 @@ const server = http.createServer(async (req, res) => {
         if (card) { card.updated = now(); if (!card.threadStart) card.threadStart = msg.ts; }
       }
       const ev = pushFeedback({ kind: 'message', target, text });
-      saveBoard(); broadcast(); // user message flips derived owed/awaiting via broadcast
+      saveBoard(); broadcast(); // user message flips derived owed via broadcast
       return sendJson(res, 200, { ok: true, seq: ev.seq });
     }
 
@@ -726,7 +692,6 @@ const server = http.createServer(async (req, res) => {
     if (route === 'GET /api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
       res.write('event: board\ndata: ' + JSON.stringify(publicBoard('user')) + '\n\n');
-      res.write(statusEvent());
       sseClients.add(res);
       req.on('close', () => sseClients.delete(res));
       return;

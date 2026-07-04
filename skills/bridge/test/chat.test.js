@@ -1,8 +1,9 @@
 'use strict';
-// Chat: agent say (main and card thread), user feedback, awaiting indicator.
+// Chat: agent say (main and card thread), user feedback. The "owes a reply"
+// signal is card.status.owed (status.test.js); no separate awaiting feed exists.
 const test = require('node:test');
 const assert = require('node:assert');
-const { startServerWithColumns, sleep } = require('./helper');
+const { startServerWithColumns } = require('./helper');
 
 test('agent say to main chat lands in board.chat and rings a level-1 event', async () => {
   const s = await startServerWithColumns();
@@ -68,30 +69,13 @@ test('user feedback lands in the thread and queues a message feedback line', asy
   }
 });
 
-test('awaiting indicator: user feedback sets it, agent reply clears it', async () => {
+test('GET /api/status carries no legacy awaiting/stale arrays', async () => {
   const s = await startServerWithColumns();
   try {
     await s.api('POST', '/api/feedback', { target: 'chat', text: 'anyone home?' });
-    let st = (await s.api('GET', '/api/status')).body;
-    assert.deepStrictEqual(st.awaiting, ['chat']);
-
-    await s.api('POST', '/api/message', { target: 'chat', text: 'yes, here' });
-    st = (await s.api('GET', '/api/status')).body;
-    assert.deepStrictEqual(st.awaiting, []);
-  } finally {
-    await s.stop();
-  }
-});
-
-test('an unanswered target goes stale after BRIDGE_AWAITING_STALE_SECS', async () => {
-  const s = await startServerWithColumns({ env: { BRIDGE_AWAITING_STALE_SECS: '1' } });
-  try {
-    await s.api('POST', '/api/feedback', { target: 'chat', text: 'still there?' });
-    let st = (await s.api('GET', '/api/status')).body;
-    assert.deepStrictEqual(st.stale, []);
-    await sleep(1100);
-    st = (await s.api('GET', '/api/status')).body;
-    assert.deepStrictEqual(st.stale, ['chat']);
+    const st = (await s.api('GET', '/api/status')).body;
+    assert.strictEqual('awaiting' in st, false);
+    assert.strictEqual('stale' in st, false);
   } finally {
     await s.stop();
   }

@@ -1,5 +1,5 @@
 // board: columns of dense tiles, drag&drop, long-press move menu, new-card modal
-import { S, columns, cards, cardVisible, cardUnread, toggleFilter, filterSelected, render } from './state.js';
+import { S, columns, cards, cardVisible, cardStatus, targetOwedStale, toggleFilter, filterSelected, render } from './state.js';
 import { api } from './api.js';
 import { esc, ago, cardEmoji, ownerColor } from './util.js';
 import { labelChipHtml } from './labels.js';
@@ -15,28 +15,28 @@ function tileHtml(c) {
   const at = c.attributes || {};
   const owner = at.owner || '';
   const msgs = (c.thread || []).length;
-  const unread = cardUnread(c);
-  // agent-working animation: SAME source as the chat typing bubble
-  // (S.awaiting + S.stale, keyed 'card:<id>'), so tile and chat can never drift.
+  const st = cardStatus(c);
+  // "agent owes you a reply" balloon: SAME source as the chat typing bubble
+  // (card.status.owed, server-derived), so tile and chat can never drift.
   // Takes priority over the unread dot — one unambiguous corner indicator.
-  // stale-awaiting mirrors the chat's "may be stuck" state: static amber ⚠, no dots.
-  const working = S.awaiting.has('card:' + c.id);
-  const staleW = working && S.stale.has('card:' + c.id);
+  // stale-owed mirrors the chat's "may be stuck" state: static amber ⚠, no dots.
+  const owed = !!st.owed;
+  const staleW = owed && targetOwedStale('card:' + c.id);
   const cornerInd = staleW
     ? '<span class="t-typing stale" title="no response yet — the agent may be stuck">⚠</span>'
-    : working
-    ? '<span class="t-typing" title="agent is working on this"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span></span>'
-    : (unread ? '<span class="t-unread" title="' + unread + ' unread"></span>' : '');
+    : owed
+    ? '<span class="t-typing" title="the agent owes you a reply here"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span></span>'
+    : (st.unread ? '<span class="t-unread" title="unread activity"></span>' : '');
   const hasLink = Object.entries(at).some(([k, v]) => k !== 'owner' && /^https?:\/\//.test(String(v)));
   const labels = (c.labels || []).map((n) => labelChipHtml(n, filterSelected('label', n))).join('');
   // worker-state stripe on the tile's LEFT edge — a PERSISTENT status signal,
-  // deliberately separate from the transient top-right corner. Driven by the
-  // card's `worker` attribute; only the known states get a stripe (whitelist, so
-  // an unknown/absent value renders no stripe and no attribute value ever reaches
-  // the class name — XSS-safe). working=green pulsing, needs-you=amber solid,
-  // idle=gray solid, anything else/absent=none.
+  // deliberately separate from the transient top-right corner. Driven by
+  // card.status.worker (the lease); only the known states get a stripe (whitelist,
+  // so absent renders no stripe and no server value ever reaches the class name —
+  // XSS-safe). working=green pulsing, needs-you=amber solid, idle=gray solid,
+  // absent=none.
   const WORKER_STATES = { working: 'Working', 'needs-you': 'Needs you', idle: 'Idle' };
-  const worker = WORKER_STATES[at.worker] ? at.worker : '';
+  const worker = st.worker && WORKER_STATES[st.worker.state] ? st.worker.state : '';
   const workerCls = worker ? ' worker worker-' + worker : ''; // worker value is whitelisted above
   const workerTitle = worker ? ' title="worker: ' + esc(WORKER_STATES[worker]) + '"' : '';
   return '<div class="tile' + (c.id === S.openCardId ? ' open' : '') + workerCls + '" draggable="true" data-id="' + esc(c.id) + '"' + workerTitle + '>' +
