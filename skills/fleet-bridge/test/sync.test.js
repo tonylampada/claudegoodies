@@ -465,6 +465,84 @@ test('resurrection: an archived alias target is restored when its task shows liv
   }
 });
 
+test('dead runtime window: meta lingers but window is gone -> lease cleared to absent, then stops asserting', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  const win = 'fleet:fm-fix-widget-a1';
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['window=' + win, 'project=projects/demo-app']);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing']);
+
+    // window alive: fresh evidence escalates to working as always
+    await fx.syncApply(s, home, { FM_SYNC_LIVE_WINDOWS: win });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'working');
+
+    // window dead (meta still on disk): the lease is actively cleared, not
+    // renewed — server decay never reaches absent on its own
+    await fx.syncApply(s, home, { FM_SYNC_LIVE_WINDOWS: '' });
+    assert.deepStrictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker,
+      { id: null, state: 'absent' });
+
+    // already unlinked: nothing left to assert
+    const plan = await fx.syncPlan(s, home, { FM_SYNC_LIVE_WINDOWS: '' });
+    assert.deepStrictEqual(plan.statuses, []);
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('live runtime window: lease renewed exactly as before (idle without fresh evidence)', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  const win = 'fleet:fm-fix-widget-a1';
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['window=' + win, 'project=projects/demo-app']);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: still at it']);
+    fx.backdate(path.join(home, 'state', 'fix-widget-a1.status'), 3600);
+
+    await fx.syncApply(s, home, { FM_SYNC_LIVE_WINDOWS: win });
+    const w = (await fx.getCard(s, 'fix-widget-a1')).status.worker;
+    assert.deepStrictEqual({ id: w.id, state: w.state }, { id: 'fix-widget-a1', state: 'idle' });
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('no window= in meta: liveness is uncheckable, old meta-present behavior holds', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app']);
+
+    await fx.syncApply(s, home, { FM_SYNC_LIVE_WINDOWS: '' }); // nothing alive in tmux
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'idle');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('backend=herdr: tmux liveness check is skipped, old meta-present behavior holds', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1',
+      ['window=hsession:%3', 'backend=herdr', 'project=projects/demo-app']);
+
+    await fx.syncApply(s, home, { FM_SYNC_LIVE_WINDOWS: '' }); // no tmux window alive
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'idle');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
 test('events: deduped by exact text across runs; captain-relevant verbs are level 1', async () => {
   const s = await startServer();
   const home = fx.makeHome();

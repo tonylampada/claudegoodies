@@ -38,6 +38,11 @@
 //      cards resurrected from old archive snapshots are covered too.
 //   5. Asserts the worker lease via status.set — EVIDENCE-BASED, never sampled
 //      from screen panes. Per linked task (aliases + task-id match):
+//        - meta records a tmux window= (<session>:<name>) that is DEAD -> the
+//          worker no longer exists: one status.set with worker null (the unlink),
+//          then stop asserting — server decay never reaches absent, so a stale
+//          lease must be cleared explicitly. backend=herdr and metas without a
+//          checkable window= skip the liveness check (meta present -> idle).
 //        - last state/<id>.status line starts needs-decision:/blocked: -> needs-you
 //        - else recent activity (mtime of state/<id>.status or
 //          state/<id>.turn-ended within FM_SYNC_FRESH_SECS, default 600) -> working
@@ -67,6 +72,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { execFileSync } = require('child_process');
 
 function warn(msg) { process.stderr.write('fm-board-sync: ' + msg + '\n'); }
 
@@ -159,7 +165,7 @@ function parseBacklog(file) {
 
 // ---------- meta / status parsing ----------
 function parseMetas(stateDir) {
-  const metas = new Map(); // id -> {kind, project, prs[]}
+  const metas = new Map(); // id -> {kind, project, window, backend, prs[]}
   let names;
   try { names = fs.readdirSync(stateDir).filter((n) => n.endsWith('.meta')).sort(); }
   catch (e) { return metas; }
@@ -167,7 +173,7 @@ function parseMetas(stateDir) {
     const id = name.slice(0, -'.meta'.length);
     const src = readFileSafe(path.join(stateDir, name));
     if (src == null) continue;
-    const m = { kind: null, project: null, prs: [] };
+    const m = { kind: null, project: null, window: null, backend: null, prs: [] };
     for (const line of src.split('\n')) {
       const kv = /^(\w+)=(.*)$/.exec(line.trim());
       if (!kv) continue;
@@ -193,10 +199,46 @@ function classifyStatusLine(line) {
   return { level: 2, kind: 'info' };
 }
 
+// ---------- runtime window liveness ----------
+// A task meta whose recorded tmux window is DEAD has no worker anymore, however
+// long the meta file lingers: the lease must be cleared, not renewed as idle
+// (server decay only goes working -> idle, never to absent). One tmux call per
+// run, cached; FM_SYNC_LIVE_WINDOWS (space/comma-separated <session>:<name>
+// targets, may be empty) overrides the real check for tests.
+let liveWindowsCache = null;
+function liveTmuxWindows() {
+  if (liveWindowsCache) return liveWindowsCache;
+  const env = process.env.FM_SYNC_LIVE_WINDOWS;
+  if (env !== undefined) {
+    liveWindowsCache = new Set(env.split(/[\s,]+/).filter(Boolean));
+    return liveWindowsCache;
+  }
+  try {
+    const out = execFileSync('tmux',
+      ['list-windows', '-a', '-F', '#{session_name}:#{window_name}'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000 });
+    liveWindowsCache = new Set(out.split('\n').filter(Boolean));
+  } catch (e) {
+    liveWindowsCache = new Set(); // tmux missing or server down: nothing is alive
+  }
+  return liveWindowsCache;
+}
+// true = alive OR uncheckable (no window= recorded, non-tmux backend such as
+// herdr, or a value not shaped <session>:<name>) — uncheckable keeps the old
+// meta-present behavior rather than guessing. false = provably dead.
+function windowAlive(meta) {
+  if (!meta.window) return true;
+  if (meta.backend && meta.backend !== 'tmux') return true;
+  const i = meta.window.indexOf(':');
+  if (i <= 0 || i === meta.window.length - 1) return true;
+  return liveTmuxWindows().has(meta.window);
+}
+
 // ---------- worker lease evidence ----------
 // The lease is derived from on-disk EVIDENCE only — status lines and turn-end
 // activity — never from screen/pane sampling. Returns {id, state} for a live
-// task, or null for a torn-down one (meta gone: unlink).
+// task, or null for a torn-down one (meta gone) or a dead runtime window
+// (worker gone while the meta lingers): both unlink.
 function lastStatusVerb(statusLines) {
   if (!statusLines.length) return null;
   const line = statusLines[statusLines.length - 1];
@@ -204,6 +246,7 @@ function lastStatusVerb(statusLines) {
 }
 function workerEvidence(stateDir, taskId, meta, statusLines) {
   if (!meta) return null; // torn down: unlink
+  if (!windowAlive(meta)) return null; // dead runtime window: no worker, unlink
   const verb = lastStatusVerb(statusLines);
   if (verb === 'needs-decision' || verb === 'blocked') return { id: taskId, state: 'needs-you' };
   const cutoff = Date.now() - FRESH_SECS * 1000;

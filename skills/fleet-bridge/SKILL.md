@@ -27,7 +27,8 @@ well as you play your part, and no better.
 
 - **Events** from status lines and PR state (deduped, leveled).
 - **Worker lease** via `status.set` — evidence-based (status/turn-end mtimes), with
-  server-side TTL decay to an honest `idle`; never pane sampling.
+  server-side TTL decay to an honest `idle`; never pane sampling. A dead runtime
+  window clears the lease (worker absent) even while the task record persists.
 - **The `prs` list** attribute (`{url, state}` from meta and backlog Done verbs).
 - **Artifacts** — the worker brief attached at card birth.
 - **Card birth** for new in-flight work, and **archive on merge** (reason `merged`).
