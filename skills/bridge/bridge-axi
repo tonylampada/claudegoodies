@@ -24,7 +24,7 @@ const cmd = argv.shift();
 const opts = {
   port: 4777, board: 'default', host: '0.0.0.0',
   textFile: null, bodyFile: null, title: null, column: null, id: null,
-  level: null, kind: null, actor: null, reason: null, attrs: [], labels: [], json: false,
+  level: null, kind: null, actor: null, reason: null, note: null, attrs: [], labels: [], json: false,
   worker: null, ttl: null,
 };
 const positional = [];
@@ -42,6 +42,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--kind') opts.kind = argv[++i];
   else if (a === '--actor') opts.actor = argv[++i];
   else if (a === '--reason') opts.reason = argv[++i];
+  else if (a === '--note') opts.note = argv[++i];
   else if (a === '--worker') opts.worker = argv[++i];
   else if (a === '--ttl') opts.ttl = parseFloat(argv[++i]);
   else if (a === '--attr') opts.attrs.push(argv[++i]);
@@ -235,9 +236,10 @@ async function cmdNotify() {
 
 async function cmdArchive() {
   const id = positional[0];
-  if (!id) die('usage: bridge-axi archive <card-id> [--reason "..."] [--kind success|info] [--level 1|2]');
+  if (!id) die('usage: bridge-axi archive <card-id> [--reason merged|killed] [--note "..."] [--kind success|info] [--level 1|2]');
   const body = { actor: opts.actor || 'agent' };
   if (opts.reason) body.reason = opts.reason;
+  if (opts.note) body.note = opts.note;
   if (opts.kind) body.kind = opts.kind;
   if (opts.level) body.level = opts.level;
   await request('POST', '/api/cards/' + encodeURIComponent(id) + '/archive', body);
@@ -380,9 +382,10 @@ if (!commands[cmd]) {
     '                                         kinds: alert question handoff success info\n' +
     '                                         level 1 notifies the human; level 2 = timeline only\n' +
     '  notify [--kind K] [--text-file f|-]    board-level notification (no card)\n' +
-    '  archive <card-id> [--reason "..."]     kill = archive (append-only file, off the board);\n' +
-    '                                         reason stored as merged|killed (text mentioning "merge"\n' +
-    '                                         maps to merged), original text kept as note\n' +
+    '  archive <card-id> [--reason merged|killed] [--note "..."]\n' +
+    '                                         kill = archive (append-only file, off the board);\n' +
+    '                                         reason is the validated enum (default killed),\n' +
+    '                                         free text goes in --note\n' +
     '  say <chat|card:ID> [--text-file f|-]   post a chat message (main chat says also notify)\n' +
     '  columns <file.json|->                  replace the column frame [{id,title}] (idempotent)\n' +
     '\nloop (at-least-once):\n' +

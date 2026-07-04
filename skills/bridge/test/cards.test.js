@@ -153,30 +153,37 @@ test('card archive: appended to archive jsonl, removed from board, board-level e
   }
 });
 
-test('archive reason maps to the merged|killed enum; free text is preserved as note', async () => {
+test('archive reason is the validated merged|killed enum; free text rides only as note', async () => {
   const s = await startServerWithColumns();
   try {
-    // legacy-compat mapping (retire in sync rewrite): "merge" anywhere -> merged,
-    // anything else (or nothing) -> killed; original text rides as note.
     await s.api('POST', '/api/cards', { title: 'A' });
     await s.api('POST', '/api/cards', { title: 'B' });
     await s.api('POST', '/api/cards', { title: 'C' });
-    await s.api('POST', '/api/cards/a/archive', { reason: 'PR merged upstream' });
-    await s.api('POST', '/api/cards/b/archive', { reason: 'not needed anymore' });
-    await s.api('POST', '/api/cards/c/archive', {});
+
+    // a free-string reason is rejected, and rejects without archiving
+    let r = await s.api('POST', '/api/cards/b/archive', { reason: 'PR merged upstream' });
+    assert.strictEqual(r.status, 400);
+    assert.strictEqual((await s.api('GET', '/api/cards/b')).status, 200); // still on the board
+
+    r = await s.api('POST', '/api/cards/a/archive', { reason: 'merged', note: 'https://example.test/pr/7' });
+    assert.strictEqual(r.status, 200);
+    await s.api('POST', '/api/cards/b/archive', { reason: 'killed', note: 'not needed anymore' });
+    await s.api('POST', '/api/cards/c/archive', {}); // no reason given: dismissed
+
     const recs = fs
       .readFileSync(path.join(s.dir, 'boards', s.board + '.archive.jsonl'), 'utf8')
       .split('\n').filter(Boolean).map((l) => JSON.parse(l));
     const by = (id) => recs.find((r) => r.card.id === id);
     assert.strictEqual(by('a').reason, 'merged');
-    assert.strictEqual(by('a').note, 'PR merged upstream');
+    assert.strictEqual(by('a').note, 'https://example.test/pr/7');
     assert.strictEqual(by('b').reason, 'killed');
     assert.strictEqual(by('b').note, 'not needed anymore');
-    assert.strictEqual(by('c').reason, 'killed'); // no reason given: dismissed
+    assert.strictEqual(by('c').reason, 'killed');
     assert.strictEqual('note' in by('c'), false);
-    // the human-readable event keeps the original text
+    // the human-readable event carries "reason: note" (or the title with no note)
     const board = (await s.api('GET', '/api/board')).body;
-    assert.ok(board.events.some((e) => e.card === 'a' && e.text === 'PR merged upstream'));
+    assert.ok(board.events.some((e) => e.card === 'a' && e.text === 'merged: https://example.test/pr/7'));
+    assert.ok(board.events.some((e) => e.card === 'c' && e.text === 'killed: C'));
   } finally {
     await s.stop();
   }

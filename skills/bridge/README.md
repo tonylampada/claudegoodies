@@ -70,7 +70,7 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | `PATCH /api/cards/<id>` | `{title?, body?, labels?, attributes?}` | attributes merge per key; value `null` deletes a key. No event is emitted — pair with an explicit event when the change is signal-worthy. |
 | `POST /api/cards/<id>/move` | `{column, actor?, level?, kind?}` | records a timeline event with the actor. Default level: agent move = 1 (notifies the human), user move = 2. User moves push `card-moved` feedback. |
 | `POST /api/cards/<id>/events` | `{text, level?, kind?, actor?}` | append event (default level 2 / kind info) |
-| `POST /api/cards/<id>/archive` | `{actor?, reason?, level?, kind?}` | kill = archive: snapshot to the archive file, remove from board, level-1 ✅ board event by default. Stored `reason` is the enum `merged \| killed` (free text mentioning "merge" maps to `merged`, else `killed`; the original text is preserved as `note`) |
+| `POST /api/cards/<id>/archive` | `{actor?, reason?, note?, level?, kind?}` | kill = archive: snapshot to the archive file, remove from board, level-1 ✅ board event by default. `reason` is the validated enum `merged \| killed` (default `killed`; anything else is a 400); optional free-text `note` is preserved on the record |
 | `POST /api/cards/<id>/status` | `{worker: {id, state} \| null, ttl?}` | `status.set` — link a worker to the card as a lease. `state` ∈ `absent\|idle\|working\|needs-you`; `ttl` in seconds (default 600; `BRIDGE_WORKER_TTL_SECS`). `null` worker or state `absent` unlinks. |
 
 ### Status
@@ -86,10 +86,10 @@ Every card goes out with one derived `status` object — `{worker: {id, state}, 
   user's last read of the card (`POST /api/read`).
 
 `card.status` is the single read source for worker/owed/unread — nothing is mirrored into
-attributes. One feeder-compat write shim remains (retire in sync rewrite): a `card.patch`
-or create carrying `attributes.worker` is translated server-side into a `status.set`
-lease (default TTL; worker id = existing lease id or the card id) and the key never
-lands in `card.attributes`.
+attributes, and `status.set` is the only writer. The one remaining compatibility path is
+load-time data migration: a stored pre-status-model `attributes.worker` value in an old
+board file is adopted as a lease when the board loads (default TTL; worker id = existing
+lease id or the card id).
 
 ### Board
 

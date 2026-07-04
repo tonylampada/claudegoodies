@@ -242,55 +242,11 @@ test('board payload: every card carries derived status; worker is never mirrored
   }
 });
 
-// feeder-compat write path (legacy-compat: retire in sync rewrite): the live
-// feeder still writes the stripe as an attributes.worker patch/create value; the
-// server translates it into the status.set lease, and card.status stays the
-// single READ source.
-test('feeder-compat: patching attributes.worker becomes a lease with the default ttl; never stored', async () => {
-  const s = await startServerWithColumns({ env: { BRIDGE_WORKER_TTL_SECS: '0.3' } });
-  try {
-    await s.api('POST', '/api/cards', { title: 'Task' });
-    await s.api('PATCH', '/api/cards/task', { attributes: { worker: 'working', repo: 'alpha' } });
-    let c = (await s.api('GET', '/api/cards/task')).body;
-    assert.strictEqual(c.status.worker.state, 'working');
-    assert.strictEqual(c.status.worker.id, 'task'); // no id in the legacy write: card id stands in
-    assert.deepStrictEqual(c.attributes, { repo: 'alpha' }); // worker consumed, sibling attrs kept
-
-    await sleep(450); // the shim uses the server's default ttl, so the lease decays
-    c = (await s.api('GET', '/api/cards/task')).body;
-    assert.strictEqual(c.status.worker.state, 'idle');
-
-    // a real status.set id survives later feeder patches
-    await s.api('POST', '/api/cards/task/status', { worker: { id: 'real-1', state: 'working' } });
-    await s.api('PATCH', '/api/cards/task', { attributes: { worker: 'needs-you' } });
-    c = (await s.api('GET', '/api/cards/task')).body;
-    assert.strictEqual(c.status.worker.id, 'real-1');
-    assert.strictEqual(c.status.worker.state, 'needs-you');
-
-    // the feeder's delete (worker: null) unlinks
-    await s.api('PATCH', '/api/cards/task', { attributes: { worker: null } });
-    c = (await s.api('GET', '/api/cards/task')).body;
-    assert.deepStrictEqual(c.status.worker, { id: null, state: 'absent' });
-    assert.strictEqual('worker' in c.attributes, false);
-  } finally {
-    await s.stop();
-  }
-});
-
-test('feeder-compat: create with attributes.worker births the lease', async () => {
-  const s = await startServerWithColumns();
-  try {
-    const r = await s.api('POST', '/api/cards', { title: 'Born busy', attributes: { worker: 'working', repo: 'beta' } });
-    assert.strictEqual(r.status, 200);
-    assert.strictEqual(r.body.card.status.worker.state, 'working');
-    assert.strictEqual(r.body.card.status.worker.id, 'born-busy');
-    assert.deepStrictEqual(r.body.card.attributes, { repo: 'beta' });
-  } finally {
-    await s.stop();
-  }
-});
-
-test('feeder-compat: a stored legacy worker attribute is adopted as a lease on load', async () => {
+// Load-time data migration: a board file written before the status model may
+// still store the old feeder's attributes.worker; normalizeBoard adopts it as a
+// lease so existing stripes survive the upgrade. The write API does NOT
+// translate — status.set is the only writer of card.status.worker.
+test('data migration: a stored legacy worker attribute is adopted as a lease on load', async () => {
   const s = await startServer({
     seed: (dir) => {
       const boards = path.join(dir, 'boards');

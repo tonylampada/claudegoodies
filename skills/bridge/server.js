@@ -113,8 +113,8 @@ function normalizeBoard(doc) {
       const ok = w && typeof w === 'object' && w.id && WORKER_LEASE_STATES.includes(w.state);
       c.status = { worker: ok ? { id: String(w.id), state: w.state, expires: w.expires || null } : null };
     }
-    // legacy-compat: retire in sync rewrite — boards written before the API cut
-    // may still store the feeder's `worker` attribute; adopt it as a lease on load
+    // data migration: board files written before the status model may still
+    // store the old feeder's `worker` attribute; adopt it as a lease on load
     // so existing stripes survive the upgrade off card.status alone.
     if (c.attributes && 'worker' in c.attributes) adoptWorkerAttr(c, c.attributes);
   }
@@ -269,12 +269,11 @@ function setStatus(card, body) {
   return { ok: true };
 }
 
-// legacy-compat: retire in sync rewrite — the live feeder still writes the worker
-// stripe as a card attribute (`card.patch` / `card.create` with
-// attributes.worker: working|needs-you|idle, null to clear). Translate that one
-// write into the status.set lease (default TTL; worker id = the existing lease id
-// or the card id) so stripes stay live off card.status alone. The key never lands
-// in card.attributes; `card.status` stays the single READ source.
+// Load-time data migration only (normalizeBoard): a stored pre-status-model
+// `attributes.worker` value (working|needs-you|idle) is translated into the
+// status.set lease (default TTL; worker id = the existing lease id or the card
+// id) so old board files upgrade cleanly. The write API no longer translates:
+// status.set is the only writer of card.status.worker.
 function adoptWorkerAttr(card, attributes) {
   if (!attributes || typeof attributes !== 'object' || !('worker' in attributes)) return;
   const v = attributes.worker;
@@ -366,7 +365,6 @@ function createCard(body, actorDefault) {
     created: now(), updated: now(), threadStart: null,
     events: [], thread: [],
   };
-  adoptWorkerAttr(card, card.attributes); // legacy-compat: retire in sync rewrite
   card.events.push(mkEvent({ text: 'created in ' + columnTitle(column), actor, level: 2 }, { kind: 'info' }));
   board.cards.push(card);
   registerCardLabels();
@@ -397,7 +395,6 @@ function patchCard(card, body) {
   if (body.body !== undefined) card.body = String(body.body);
   if (Array.isArray(body.labels)) card.labels = body.labels.filter((l) => typeof l === 'string' && l);
   if (body.attributes && typeof body.attributes === 'object') {
-    adoptWorkerAttr(card, body.attributes); // legacy-compat: retire in sync rewrite
     for (const [k, v] of Object.entries(body.attributes)) {
       if (v === null) delete card.attributes[k];
       else card.attributes[k] = v;
@@ -409,18 +406,21 @@ function patchCard(card, body) {
 
 function archiveCard(card, body, actorDefault) {
   const actor = String((body && body.actor) || actorDefault || 'agent').slice(0, 60);
-  // Archive reason is the enum `merged | killed` (merged = landed, killed = dismissed).
-  // legacy-compat: retire in sync rewrite — callers still send a free string; map it
-  // (mentions "merge" → merged, else killed) and preserve the original text as `note`.
-  const raw = String((body && body.reason) || '').slice(0, 500);
-  const reason = /merge/i.test(raw) ? 'merged' : 'killed';
+  // Archive reason is the validated enum `merged | killed` (merged = landed,
+  // killed = dismissed — the default when none is given). Free text belongs in
+  // the optional `note`, preserved on the archive record.
+  const reason = (body && body.reason) || 'killed';
+  if (reason !== 'merged' && reason !== 'killed') {
+    return { error: "reason must be 'merged' or 'killed' (free text goes in note)" };
+  }
+  const note = body && body.note ? String(body.note).slice(0, 500) : null;
   const rec = { ts: now(), actor, reason, card };
-  if (raw && raw !== reason) rec.note = raw;
+  if (note) rec.note = note;
   fs.appendFileSync(ARCHIVE_FILE, JSON.stringify(rec) + '\n');
   board.cards = board.cards.filter((c) => c.id !== card.id);
   // The kill lands on the board-level stream (the card is gone) with a card reference.
   const ev = mkEvent(
-    { level: body && body.level, kind: body && body.kind, actor, text: raw || 'archived: ' + card.title },
+    { level: body && body.level, kind: body && body.kind, actor, text: reason + ': ' + (note || card.title) },
     { level: 1, kind: 'success' });
   ev.card = card.id; ev.cardTitle = card.title; ev.archived = true;
   board.events.push(ev);
@@ -518,6 +518,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (sub === 'archive' && req.method === 'POST') {
         const r = archiveCard(card, JSON.parse(await readBody(req) || '{}'));
+        if (r.error) return sendJson(res, 400, { error: r.error });
         saveBoard(); broadcast();
         return sendJson(res, 200, r);
       }

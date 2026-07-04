@@ -86,7 +86,7 @@ Born on first use (`card.patch` with a new tag name creates it); no dedicated li
 | attribute | values | meaning |
 |---|---|---|
 | `card` | frozen Card snapshot | full state at archive time |
-| `reason` | client-defined, e.g. `merged` \| `killed` | why it left; the client decides WHEN to archive |
+| `reason` | `merged` \| `killed` (validated) | why it left; the client decides WHEN to archive. Optional free-text `note` rides along |
 | `actor` | `user` \| `agent` | who archived |
 
 Append-only. Nothing is ever deleted. Cards leave the board only by archive.
