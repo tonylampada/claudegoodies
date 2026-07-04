@@ -56,8 +56,11 @@ flowchart LR
   S --> P["card.patch(prs, artifacts)"]
   S --> W["status.set(worker lease)"]
   S --> M["card.archive(merged)"]
+  S --> R["card.restore — live evidence for an archived card"]
   S -.->|NEVER| X["card.move ✗"]
 ```
+
+**Resurrection.** A kill can be a mistake. When live work evidence maps to a card id that is not on the board but is in the archive (most recent record), the feeder calls `card.restore` — frozen history intact plus a loud level-1 "resurrected — work is still running" event — never a blank rebirth. Birth is only for ids never archived. Alias targets in the archive restore too (an alias explicitly links live work to that card); the subagent registry never mints and never restores. `merged` archives are terminal in practice — a merged task produces no further evidence — but if evidence does arrive, the same rule holds.
 
 ### Where they meet
 

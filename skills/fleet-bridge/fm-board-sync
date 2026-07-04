@@ -7,6 +7,7 @@
 //   card.patch            prs / artifacts attribute updates
 //   status.set            the worker lease (evidence-based, single writer)
 //   card.archive(merged)  when a task lands in backlog Done with verb "merged"
+//   card.restore          when live evidence maps to an ARCHIVED card id
 //   card.move             NEVER (invariant 3: sync feeds, never moves)
 //
 // What it does per run:
@@ -16,6 +17,14 @@
 //      a data/<task-id>/brief.md in the home is attached as a {uri, label} entry in
 //      the `artifacts` list attribute; artifacts are additive only (append missing
 //      entries, never overwrite an existing list).
+//      Resurrection: when the live work's card id is NOT on the board but IS in the
+//      archive (most recent record), the feeder calls card.restore instead — frozen
+//      history intact plus a loud level-1 "resurrected — work is still running"
+//      event — never a blank rebirth. Birth is only for ids never archived. Alias
+//      targets in the archive restore the same way (an alias explicitly links live
+//      work to that card); the subagent registry still never mints and never
+//      restores (it rides existing cards only). The archive record remains
+//      (append-only log): the board is truth for liveness.
 //   3. Appends timeline events for detected signals, deduped by exact text:
 //        - "PR opened <url>" when meta records pr=          (level 2)
 //        - status-file lines: done/failed/needs-decision/blocked -> level 1
@@ -307,20 +316,35 @@ function parseSecondmates(file) {
   return out;
 }
 
+// ---------- resurrection snapshot ----------
+// The frozen card from an archive record, normalized for planning: after the
+// restore is applied it IS the board card, so events dedupe and prs/artifacts
+// patches plan against it exactly like an existing card (no _new flag: the
+// patches ride plan.attrs, applied after the restore).
+function restoredCard(rec) {
+  const card = JSON.parse(JSON.stringify(rec.card));
+  if (!Array.isArray(card.events)) card.events = [];
+  if (!Array.isArray(card.thread)) card.thread = [];
+  if (!card.attributes || typeof card.attributes !== 'object') card.attributes = {};
+  return card;
+}
+
 // ---------- plan for one home ----------
-// Emits {creates:[card], events:[{card,text,level,kind}], attrs:[{card,attributes}],
-//        statuses:[{card,worker}], archives:[{card,reason,note}],
-//        statusDecided:Set<cardId>, prsDecided:Set<cardId>} against the board
-// snapshot. statusDecided = cards whose worker lease this home owns this run;
-// main() unlinks any other owned card that still shows a linked worker.
-function planHome(home, owner, board) {
+// Emits {creates:[card], restores:[{card,text}], events:[{card,text,level,kind}],
+//        attrs:[{card,attributes}], statuses:[{card,worker}],
+//        archives:[{card,reason,note}], statusDecided:Set<cardId>,
+//        prsDecided:Set<cardId>} against the board snapshot (archived = most
+// recent archive record per card id). statusDecided = cards whose worker lease
+// this home owns this run; main() unlinks any other owned card that still shows
+// a linked worker.
+function planHome(home, owner, board, archived) {
   const backlog = parseBacklog(path.join(home, 'data', 'backlog.md'));
   const stateDir = path.join(home, 'state');
   const metas = parseMetas(stateDir);
   const aliases = parseAliases(path.join(home, 'data', 'board-aliases'));
   const subagents = parseSubagents(path.join(stateDir, 'subagents.json'));
   const plan = {
-    creates: [], events: [], attrs: [], statuses: [], archives: [],
+    creates: [], restores: [], events: [], attrs: [], statuses: [], archives: [],
     statusDecided: new Set(), prsDecided: new Set(),
   };
 
@@ -389,7 +413,7 @@ function planHome(home, owner, board) {
     const m = metas.get(taskId);
     if (!m) continue; // alias to a task with no meta: nothing live to feed
     const card = boardCard(targetCard);
-    if (!card) continue; // alias target not on the board yet (created below if it is live work)
+    if (!card) continue; // alias target not on the board yet (created or restored below if it is live work)
     feedStatus(targetCard, card, workerEvidence(stateDir, taskId, m, parseStatus(stateDir, taskId)));
   }
 
@@ -405,8 +429,15 @@ function planHome(home, owner, board) {
   for (const [taskId, t] of live) {
     const id = cardId(taskId);
     let card = boardCard(id);
-    if (!card) {
-      // NEW work: the only time this feeder creates (and seeds title/body)
+    if (!card && archived.has(id)) {
+      // ARCHIVED id with live evidence: resurrect the frozen card (card.restore,
+      // most recent record), never a blank rebirth. The frozen snapshot plans as
+      // the board card, so history dedupes and patches ride after the restore.
+      card = restoredCard(archived.get(id));
+      plan.restores.push({ card: id, text: 'resurrected — work is still running' });
+    } else if (!card) {
+      // NEW work, never archived: the only time this feeder creates (and seeds
+      // title/body)
       const type = t.kind === 'scout' ? 'investigation' : 'implementation';
       const attributes = { type, owner };
       if (t.repo) attributes.repo = t.repo;
@@ -502,8 +533,21 @@ async function main() {
     if (opts.apply) process.exit(1);
   }
 
+  // archive index for resurrection: most recent record per card id (the archive
+  // endpoint serves newest first, so the first hit per id wins). A read failure
+  // only disables resurrection for this run, never the rest of the sync.
+  const archived = new Map();
+  try {
+    const arch = await request('GET', '/api/archive?limit=1000000');
+    for (const rec of (arch && arch.archive) || []) {
+      if (rec && rec.card && rec.card.id && !archived.has(rec.card.id)) archived.set(rec.card.id, rec);
+    }
+  } catch (e) {
+    warn('archive not readable on port ' + opts.port + ': ' + e.message + ' (resurrection disabled this run)');
+  }
+
   // merge plans across the main home and each secondmate home
-  const plan = { columns: COLUMNS, creates: [], events: [], attrs: [], statuses: [], archives: [] };
+  const plan = { columns: COLUMNS, creates: [], restores: [], events: [], attrs: [], statuses: [], archives: [] };
   const homes = [{ home, owner: opts.owner }];
   if (opts.secondmates) {
     for (const sm of parseSecondmates(path.join(home, 'data', 'secondmates.md'))) {
@@ -514,8 +558,9 @@ async function main() {
   const statusDecided = new Set();
   const prsDecided = new Set();
   for (const h of homes) {
-    const p = planHome(h.home, h.owner, board);
+    const p = planHome(h.home, h.owner, board, archived);
     plan.creates.push(...p.creates);
+    plan.restores.push(...p.restores);
     plan.events.push(...p.events);
     plan.attrs.push(...p.attrs);
     plan.statuses.push(...p.statuses);
@@ -551,12 +596,20 @@ async function main() {
     return;
   }
 
-  // apply: columns (idempotent) -> creates -> attrs -> statuses -> events -> archives
+  // apply: columns (idempotent) -> creates -> restores -> attrs -> statuses ->
+  // events -> archives
   await request('PUT', '/api/columns', plan.columns);
-  let n = { created: 0, attrs: 0, statuses: 0, events: 0, archived: 0 };
+  let n = { created: 0, restored: 0, attrs: 0, statuses: 0, events: 0, archived: 0 };
   for (const c of plan.creates) {
     try { await request('POST', '/api/cards', c); n.created++; }
     catch (e) { warn('create ' + c.id + ' failed: ' + e.message); }
+  }
+  for (const rs of plan.restores) {
+    try {
+      await request('POST', '/api/cards/' + encodeURIComponent(rs.card) + '/restore',
+        { text: rs.text, actor: 'sync' });
+      n.restored++;
+    } catch (e) { warn('restore ' + rs.card + ' failed: ' + e.message); }
   }
   for (const a of plan.attrs) {
     try { await request('PATCH', '/api/cards/' + encodeURIComponent(a.card), { attributes: a.attributes }); n.attrs++; }

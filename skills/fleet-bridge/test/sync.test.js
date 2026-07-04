@@ -319,6 +319,110 @@ test('archive: Done verb merged -> card.archive(reason merged), prs marked merge
   }
 });
 
+test('resurrection: killed card + live evidence -> card.restore with history, not a blank rebirth', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget rendering (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app', 'kind=ship']);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing']);
+    await fx.syncApply(s, home);
+    const born = await fx.getCard(s, 'fix-widget-a1');
+
+    // the captain kills the card by mistake; the task keeps running
+    await s.api('POST', '/api/cards/fix-widget-a1/archive', { reason: 'killed', actor: 'user' });
+    assert.strictEqual((await s.api('GET', '/api/cards/fix-widget-a1')).status, 404);
+
+    const plan = await fx.syncPlan(s, home);
+    assert.deepStrictEqual(plan.creates, []); // the blank re-birth path is dead
+    assert.deepStrictEqual(plan.restores, [
+      { card: 'fix-widget-a1', text: 'resurrected — work is still running' },
+    ]);
+
+    const r = await fx.syncApply(s, home);
+    assert.strictEqual(r.code, 0, r.stderr);
+    const c = await fx.getCard(s, 'fix-widget-a1');
+    // frozen history intact — not blank
+    assert.strictEqual(c.title, born.title);
+    assert.strictEqual(c.body, born.body);
+    assert.deepStrictEqual(c.attributes.type, 'implementation');
+    assert.ok(c.events.some((e) => e.text === 'working: implementing'), 'old timeline survives');
+    // the loud level-1 resurrection event, exactly once (dedupe holds across runs)
+    await fx.syncApply(s, home);
+    const res = (await fx.getCard(s, 'fix-widget-a1')).events
+      .filter((e) => e.text === 'resurrected — work is still running');
+    assert.strictEqual(res.length, 1);
+    assert.strictEqual(res[0].level, 1);
+    // the evidence lease is re-asserted on the restored card
+    assert.strictEqual(c.status.worker.state, 'working');
+    // the kill record remains in the append-only archive log
+    const recs = fs.readFileSync(path.join(s.dir, 'boards', s.board + '.archive.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.strictEqual(recs.length, 1);
+    assert.strictEqual(recs[0].reason, 'killed');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('resurrection: archived id with no live evidence stays archived; fresh work still births', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['old-task-z9 - Old task (repo: demo-app)'] });
+    fx.writeMeta(home, 'old-task-z9', ['project=projects/demo-app']);
+    await fx.syncApply(s, home);
+    await s.api('POST', '/api/cards/old-task-z9/archive', { reason: 'killed', actor: 'user' });
+
+    // the old task is gone (no meta, not in flight); a never-archived task appears
+    fx.rmMeta(home, 'old-task-z9');
+    fx.writeBacklog(home, { inflight: ['new-task-b2 - New task (repo: demo-app)'] });
+    fx.writeMeta(home, 'new-task-b2', ['project=projects/demo-app']);
+
+    const plan = await fx.syncPlan(s, home);
+    assert.deepStrictEqual(plan.restores, []); // no evidence, no resurrection
+    assert.deepStrictEqual(plan.creates.map((c) => c.id), ['new-task-b2']); // birth still works
+
+    await fx.syncApply(s, home);
+    assert.strictEqual((await s.api('GET', '/api/cards/old-task-z9')).status, 404); // rests in peace
+    assert.strictEqual((await s.api('GET', '/api/cards/new-task-b2')).status, 200);
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('resurrection: an archived alias target is restored when its task shows live evidence', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    await s.api('PUT', '/api/columns', FRAME);
+    await s.api('POST', '/api/cards', {
+      id: 'captain-card', title: 'Improve widgets', column: 'ideas', actor: 'user',
+      attributes: { type: 'plan', owner: 'firstmate' },
+    });
+    await s.api('POST', '/api/cards/captain-card/archive', { reason: 'killed', actor: 'user' });
+
+    // an alias explicitly links live work to the killed card
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app']);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing']);
+    fx.writeAliases(home, ['fix-widget-a1 captain-card']);
+    await fx.syncApply(s, home);
+
+    const c = await fx.getCard(s, 'captain-card');
+    assert.strictEqual(c.title, 'Improve widgets'); // frozen state, not a re-mint
+    assert.strictEqual(c.column, 'ideas'); // column as frozen: sync still never moves
+    assert.ok(c.events.some((e) => e.text === 'resurrected — work is still running'));
+    assert.strictEqual(c.status.worker.id, 'fix-widget-a1'); // the lease rides the restored card
+    assert.strictEqual((await s.api('GET', '/api/cards/fix-widget-a1')).status, 404); // no duplicate mint
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
 test('events: deduped by exact text across runs; captain-relevant verbs are level 1', async () => {
   const s = await startServer();
   const home = fx.makeHome();

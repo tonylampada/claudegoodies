@@ -86,6 +86,13 @@ board:
   `working` with `type`/`repo`/`owner` attributes and a seed title/body. After birth the
   feeder never touches title, body, or labels again — firstmate curates those by hand
   (`bridge-axi patch`), and the captain's retouches stick.
+- **Resurrection on live evidence**: when live work maps to a card id that is not on the
+  board but IS in the archive (most recent record), the feeder calls `card.restore`
+  instead of minting — frozen history intact plus a loud level-1 "resurrected — work is
+  still running" event, never a blank rebirth. Birth is only for ids never archived; the
+  kill record stays in the append-only archive log (the board is truth for liveness).
+  Alias targets in the archive restore too; the subagent registry never mints and never
+  restores.
 - **Event appends**, deduped by exact text: `PR opened <url>` (level 2), status-file lines
   (`done:`/`failed:`/`needs-decision:`/`blocked:` → level 1; other lines → level 2).
 - **Attribute updates**: the `prs` list (`{url, state}` — meta-recorded PRs `open`,
