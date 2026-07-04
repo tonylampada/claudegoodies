@@ -78,13 +78,16 @@ voiceSelect.onchange = () => {
   else localStorage.removeItem(VOICE_KEY);
 };
 function pickVoice() {
-  return selectedVoice() ||
-    voices.find((v) => /pt[-_]BR/i.test(v.lang)) || voices.find((v) => /^pt/i.test(v.lang)) || null;
+  // Only ever return a voice that is actually in the loaded list, so a stale or
+  // not-yet-loaded selection falls back to the engine default instead of failing.
+  const sel = selectedVoice();
+  if (sel && voices.includes(sel)) return sel;
+  return voices.find((v) => /pt[-_]BR/i.test(v.lang)) || voices.find((v) => /^pt/i.test(v.lang)) || null;
 }
 function utter(text) {
   const u = new SpeechSynthesisUtterance(text);
   const v = pickVoice();
-  if (v) { u.voice = v; u.lang = v.lang; }
+  if (v) { u.voice = v; u.lang = v.lang; } // else: default voice (voices may still be loading)
   return u;
 }
 function stripEmoji(s) { // spoken text only
@@ -95,35 +98,102 @@ function stripEmoji(s) { // spoken text only
     .replace(/[←-⇿⌀-⏿■-◿☀-➿⬀-⯿]/g, ' ')
     .replace(/\s{2,}/g, ' ').trim();
 }
+// ---------- robust speech controller ----------
+// Reliability hazards this guards against:
+//  - overlapping utterances wedging the queue (rapid messages) -> cancel-and-
+//    speak-latest: a new message supersedes the old so the newest is always heard;
+//  - Chrome/Safari idle auto-pause and the ~15s mid-utterance cutoff -> a keepalive
+//    that resume()s while speaking, plus splitting long text into sentence chunks;
+//  - a stuck/failed utterance killing all later speech -> onerror resets the engine
+//    and retries the chunk once, then moves on instead of dying silently.
+let speakQueue = [];   // remaining chunks of the CURRENT message
+let speakGen = 0;      // bumped per message; stale utterance callbacks are ignored
+let retriedChunk = false;
+let keepalive = null;
+
+function stopKeepalive() { if (keepalive) { clearInterval(keepalive); keepalive = null; } }
+function startKeepalive() {
+  stopKeepalive();
+  keepalive = setInterval(() => {
+    if (!window.speechSynthesis) return stopKeepalive();
+    if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.resume();
+    else stopKeepalive();
+  }, 7000);
+}
+// split into sentence-sized chunks so no single utterance is long enough to hit
+// the engine's mid-utterance cutoff; hard-wrap anything still oversized.
+function chunkText(s) {
+  const parts = s.match(/[^.!?\n]+[.!?]*|\n+/g) || [s];
+  const out = [];
+  let buf = '';
+  for (let p of parts) {
+    p = p.replace(/\s+/g, ' ').trim();
+    if (!p) continue;
+    if (buf && (buf + ' ' + p).length > 180) { out.push(buf); buf = ''; }
+    buf = buf ? buf + ' ' + p : p;
+    while (buf.length > 200) { out.push(buf.slice(0, 200)); buf = buf.slice(200).trim(); }
+  }
+  if (buf) out.push(buf);
+  return out.length ? out : [s];
+}
+function playNext(gen) {
+  if (gen !== speakGen) return;             // a newer message superseded this one
+  if (!speakQueue.length) { stopKeepalive(); return; }
+  const u = utter(speakQueue[0]);
+  u.onend = () => { if (gen !== speakGen) return; speakQueue.shift(); retriedChunk = false; playNext(gen); };
+  u.onerror = () => {
+    if (gen !== speakGen) return;           // 'canceled'/'interrupted' from a newer speak(): ignore
+    if (!retriedChunk) {                     // recover once: reset the engine, retry this chunk
+      retriedChunk = true;
+      try { speechSynthesis.cancel(); } catch (e) {}
+      setTimeout(() => playNext(gen), 150);
+    } else { retriedChunk = false; speakQueue.shift(); playNext(gen); } // give up on this chunk, continue
+  };
+  try { speechSynthesis.resume(); speechSynthesis.speak(u); }
+  catch (e) { speakQueue.shift(); playNext(gen); }
+}
 export function speak(text) {
   if (!voiceOn || !window.speechSynthesis) return;
   const plain = stripEmoji(text.replace(/```[\s\S]*?```/g, ' code ').replace(/[`*#\[\]()]/g, ' ').replace(/https?:\S+/g, ' link '));
   if (!plain) return;
-  speechSynthesis.resume(); // engines can auto-pause; wake it before speaking
-  speechSynthesis.speak(utter(plain.slice(0, 600)));
+  const gen = ++speakGen;                    // newest message wins
+  speakQueue = chunkText(plain.slice(0, 1200));
+  retriedChunk = false;
+  try { speechSynthesis.cancel(); } catch (e) {} // clear anything in flight / a wedged queue
+  startKeepalive();
+  setTimeout(() => playNext(gen), 60);       // let cancel() settle before speak() (Chrome quirk)
+}
+export function stopSpeaking() {
+  speakGen++; speakQueue = []; stopKeepalive();
+  try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
 }
 function setVoiceOn(on) {
   voiceOn = on;
   voiceBtn.classList.toggle('on', on);
   voiceBtn.textContent = on ? '🔊 on' : '🔊 off';
   document.getElementById('voice-tools').classList.toggle('dim', !on);
+  if (!on) stopSpeaking(); // turning voice off silences anything mid-utterance
   try { if (on) localStorage.setItem(VOICE_ON_KEY, '1'); else localStorage.removeItem(VOICE_ON_KEY); } catch (e) {}
 }
-// speechSynthesis is gesture-gated: after load it stays muted until a real user
-// interaction actually invokes speak(), so incoming messages silently don't voice
-// (especially when the toggle was already ON from a previous session). Prime it —
-// speak a silent, canceled primer — inside a genuine gesture to unlock it.
+// speechSynthesis is gesture-gated: after load it stays muted until a genuine
+// user interaction speaks a REAL utterance. The voice-TEST button reliably
+// unlocks because it does exactly that; a silent/volume-0 primer does NOT count
+// on iOS Safari, so the engine stayed half-locked and SSE-driven messages (not
+// in a gesture) failed until the test button was pressed. So every unlock path
+// runs the SAME routine the test button uses — cancel, resume, utter(), speak at
+// full volume — differing only in the text. The primer speaks a lone "." which
+// engines voice as (essentially) nothing, but iOS still accepts it as real.
 let primed = false;
-function primeVoice() {
-  if (primed || !window.speechSynthesis) return;
+function realUnlock(text) {
+  if (!window.speechSynthesis) return;
   try {
-    speechSynthesis.resume(); // some engines start paused
-    const u = new SpeechSynthesisUtterance(' ');
-    u.volume = 0;
-    speechSynthesis.speak(u);
+    speechSynthesis.cancel();
+    speechSynthesis.resume();
+    speechSynthesis.speak(utter(text)); // real, non-empty, full-volume utterance in-gesture
     primed = true;
   } catch (e) {}
 }
+function primeVoice() { if (!primed) realUnlock('.'); } // near-silent but REAL unlock
 // Fallback: unlock on the very first user gesture anywhere on the page.
 function firstGestureUnlock() {
   primeVoice();
@@ -136,12 +206,8 @@ voiceBtn.onclick = () => {
   setVoiceOn(!voiceOn);
 };
 try { if (localStorage.getItem(VOICE_ON_KEY) === '1') setVoiceOn(true); } catch (e) {} // restore toggle; unlock waits for a gesture
-document.getElementById('voice-test').onclick = () => {
-  if (!window.speechSynthesis) return;
-  primed = true; // an explicit spoken utterance in this gesture also unlocks
-  speechSynthesis.cancel();
-  speechSynthesis.speak(utter('Hello, this is my voice.'));
-};
+// the test button is the proven unlock path; it just uses an audible greeting.
+document.getElementById('voice-test').onclick = () => realUnlock('Hello, this is my voice.');
 
 // ---------- speak only NEW agent messages ----------
 let firstLoad = true;
