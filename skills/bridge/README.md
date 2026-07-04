@@ -28,6 +28,7 @@ append-only), `<name>.feedback.jsonl` (human→agent queue), `<name>.feedback.ac
     "attributes": {"type": "implementation", "owner": "agent-a", "pr": "https://…"},
     "body": "## Current state\n…",                    // markdown, rewritten as work evolves
     "created": "…", "updated": "…", "threadStart": "…", // threadStart: fixed chat anchor
+    "status": {"worker": {"id": "fix-1", "state": "working", "expires": "…"}}, // lease; only status.set writes it
     "events": [{"seq": 7, "ts": "…", "level": 1, "kind": "handoff", "text": "…", "actor": "agent"}],
     "thread": [{"author": "agent|user", "text": "…", "ts": "…"}]
   }],
@@ -51,8 +52,8 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | Route | Returns |
 |---|---|
 | `GET /` , `GET /ui/*` | the web UI |
-| `GET /api/board` | full board doc |
-| `GET /api/cards/<id>` | one card |
+| `GET /api/board` | full board doc; every card carries a derived `status` (see Status) |
+| `GET /api/cards/<id>` | one card, with derived `status` |
 | `GET /api/status` | `{board, port, cards, seq, feedback_seq, feedback_ack, awaiting, stale, pid}` |
 | `GET /api/archive?limit=N` | last N archived records, newest first |
 | `GET /api/notifications?user=U` | level-1 events with read flags, `{items, unread}` |
@@ -70,6 +71,22 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | `POST /api/cards/<id>/move` | `{column, actor?, level?, kind?}` | records a timeline event with the actor. Default level: agent move = 1 (notifies the human), user move = 2. User moves push `card-moved` feedback. |
 | `POST /api/cards/<id>/events` | `{text, level?, kind?, actor?}` | append event (default level 2 / kind info) |
 | `POST /api/cards/<id>/archive` | `{actor?, reason?, level?, kind?}` | kill = archive: snapshot to the archive file, remove from board, level-1 ✅ board event by default |
+| `POST /api/cards/<id>/status` | `{worker: {id, state} \| null, ttl?}` | `status.set` — link a worker to the card as a lease. `state` ∈ `absent\|idle\|working\|needs-you`; `ttl` in seconds (default 600; `BRIDGE_WORKER_TTL_SECS`). `null` worker or state `absent` unlinks. |
+
+### Status
+
+Every card goes out with one derived `status` object — `{worker: {id, state}, owed, unread}`:
+
+- `worker` — the lease written by `status.set`. Past its TTL, `working`/`needs-you` decays to
+  `idle` at read time (the expiry timestamp is persisted; no timers, so decay survives a
+  restart). No worker linked → `{id: null, state: "absent"}`.
+- `owed` — server-derived, nobody writes it: true iff the latest thread message is the user's
+  with no agent reply after it.
+- `unread` — server-derived: true iff a level-1 event or an agent reply landed after the
+  user's last read of the card (`POST /api/read`).
+
+The `awaiting`/`stale` arrays on `GET /api/status` and the SSE `status` event are a legacy
+mapping derived from `owed` (kept for the current UI; retired at the API cut).
 
 ### Board
 

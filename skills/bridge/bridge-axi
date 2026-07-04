@@ -25,6 +25,7 @@ const opts = {
   port: 4777, board: 'default', host: '0.0.0.0',
   textFile: null, bodyFile: null, title: null, column: null, id: null,
   level: null, kind: null, actor: null, reason: null, attrs: [], labels: [], json: false,
+  worker: null, ttl: null,
 };
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
@@ -41,6 +42,8 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--kind') opts.kind = argv[++i];
   else if (a === '--actor') opts.actor = argv[++i];
   else if (a === '--reason') opts.reason = argv[++i];
+  else if (a === '--worker') opts.worker = argv[++i];
+  else if (a === '--ttl') opts.ttl = parseFloat(argv[++i]);
   else if (a === '--attr') opts.attrs.push(argv[++i]);
   else if (a === '--label') opts.labels.push(argv[++i]);
   else if (a === '--json') opts.json = true;
@@ -137,7 +140,10 @@ async function cmdBoard() {
     console.log('\n' + col.title + ' (' + cards.length + ')');
     for (const c of cards) {
       const at = c.attributes || {};
-      const extras = [at.type, at.owner, (c.labels || []).join(','), at.pr ? 'PR:' + at.pr_state : '']
+      const st = c.status || {};
+      const w = st.worker && st.worker.state !== 'absent' ? st.worker.state : '';
+      const extras = [at.type, at.owner, (c.labels || []).join(','), at.pr ? 'PR:' + at.pr_state : '',
+        w, st.owed ? 'owed' : '', st.unread ? 'unread' : '']
         .filter(Boolean).join(' | ');
       console.log('  ' + c.id + '  ' + c.title + (extras ? '  [' + extras + ']' : ''));
     }
@@ -149,6 +155,7 @@ async function cmdShow() {
   const c = await request('GET', '/api/cards/' + encodeURIComponent(id));
   if (opts.json) return console.log(JSON.stringify(c, null, 2));
   console.log('# ' + c.title + '  (id=' + c.id + ', column=' + c.column + ')');
+  console.log('status: ' + fmtStatus(c.status));
   const at = c.attributes || {};
   for (const [k, v] of Object.entries(at)) console.log(k + ': ' + v);
   if ((c.labels || []).length) console.log('labels: ' + c.labels.join(', '));
@@ -281,7 +288,31 @@ async function cmdAck() {
   console.log('acked ' + seq + ' (committed=' + r.ack + ')');
 }
 
+function fmtStatus(s) {
+  const w = s && s.worker ? s.worker : { id: null, state: 'absent' };
+  return 'worker=' + w.state + (w.id ? '(' + w.id + ')' : '') + ' owed=' + !!(s && s.owed) + ' unread=' + !!(s && s.unread);
+}
+
 async function cmdStatus() {
+  // status                                   -> server status (unchanged)
+  // status <card-id>                         -> the card's derived status
+  // status <card-id> <state> [--worker W] [--ttl secs]  -> status.set (worker lease)
+  const id = positional[0];
+  if (id) {
+    const state = positional[1];
+    if (!state) {
+      const c = await request('GET', '/api/cards/' + encodeURIComponent(id));
+      if (opts.json) return console.log(JSON.stringify(c.status, null, 2));
+      return console.log(id + ': ' + fmtStatus(c.status));
+    }
+    const body = state === 'absent'
+      ? { worker: null }
+      : { worker: { id: opts.worker, state } };
+    if (state !== 'absent' && !opts.worker) die('usage: bridge-axi status <card-id> <absent|idle|working|needs-you> [--worker <worker-id>] [--ttl <secs>]\n  (--worker required unless state is absent)');
+    if (opts.ttl != null) body.ttl = opts.ttl;
+    const r = await request('POST', '/api/cards/' + encodeURIComponent(id) + '/status', body);
+    return console.log(id + ': ' + fmtStatus(r.status));
+  }
   const st = await serverUp();
   if (!st) { console.log('server: down (port ' + opts.port + ')'); process.exit(1); }
   const ack = st.feedback_ack != null ? st.feedback_ack : readCursor(); // old server fallback
@@ -333,6 +364,12 @@ if (!commands[cmd]) {
     '  open [--host H]                        start server if needed (idempotent), print URL\n' +
     '  status                                 up/down, board, card count, pending feedback\n' +
     '  stop                                   stop the server\n' +
+    '\nstatus (the ONE work signal; worker is a lease, owed/unread are server-derived):\n' +
+    '  status <card-id> [--json]              the card\'s derived status: worker/owed/unread\n' +
+    '  status <card-id> <state> --worker <id> [--ttl <secs>]\n' +
+    '                                         status.set: link worker + state (absent|idle|working|needs-you)\n' +
+    '                                         as a lease; past the TTL (default 600s) working/needs-you\n' +
+    '                                         decays to idle; "status <card-id> absent" unlinks the worker\n' +
     '\nread:\n' +
     '  board [--json]                         columns + card one-liners (or full JSON)\n' +
     '  show <card-id> [--json]                one card: attributes, body, events, thread\n' +

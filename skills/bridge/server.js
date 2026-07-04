@@ -7,6 +7,7 @@
 //             columns: [{id, title}],                       // owned state, ordered
 //             cards:   [{id, title, column, labels[], attributes{}, body,
 //                        created, updated, threadStart,
+//                        status: {worker: null|{id, state, expires}},  // lease; only status.set writes it
 //                        events: [{seq, ts, level, kind, text, actor}],
 //                        thread: [{author, text, ts}] }],
 //             chat:    [{author, text, ts}],
@@ -80,6 +81,11 @@ for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { cleanup(); proc
 
 // ---------- board state ----------
 function now() { return new Date().toISOString(); }
+// Worker lease states. `absent` is never persisted: it is the derived state of a
+// card with no worker linked (persisted lease = null).
+const WORKER_STATES = ['absent', 'idle', 'working', 'needs-you'];
+const WORKER_LEASE_STATES = ['idle', 'working', 'needs-you'];
+const WORKER_TTL_SECS = parseFloat(process.env.BRIDGE_WORKER_TTL_SECS) || 600;
 function defaultBoard() {
   return {
     title: opts.board, subtitle: '', updated: now(), seq: 0,
@@ -99,6 +105,14 @@ function normalizeBoard(doc) {
     if (!Array.isArray(c.thread)) c.thread = [];
     if (!Array.isArray(c.labels)) c.labels = [];
     if (!c.attributes || typeof c.attributes !== 'object') c.attributes = {};
+    // status: keep only a valid persisted worker lease; an absent status stays
+    // absent (means "status.set never touched this card"), odd shapes collapse
+    // to a cleared lease. Decay is derived on read, never persisted.
+    if (c.status !== undefined) {
+      const w = c.status && typeof c.status === 'object' ? c.status.worker : null;
+      const ok = w && typeof w === 'object' && w.id && WORKER_LEASE_STATES.includes(w.state);
+      c.status = { worker: ok ? { id: String(w.id), state: w.state, expires: w.expires || null } : null };
+    }
   }
   // seq must top every stored event (defensive after hand edits)
   let max = b.seq || 0;
@@ -195,50 +209,131 @@ function flushPollers() {
   });
 }
 
-// ---------- SSE clients ----------
-const sseClients = new Set();
-function broadcast() {
-  const payload = 'event: board\ndata: ' + JSON.stringify(board) + '\n\n';
-  for (const res of sseClients) res.write(payload);
+// ---------- card status (the ONE work signal; derived on read) ----------
+// card.status.worker is the only writable signal, set exclusively by status.set
+// (POST /api/cards/:id/status) as a lease with expiry: the persisted record is
+// {id, state, expires}; when the lease expires, working/needs-you decays to
+// idle AT READ TIME (no timers, so decay survives a restart). No worker → absent.
+// `owed` and `unread` are server-derived from persisted thread/event/read state,
+// so they too survive restarts; nobody writes them.
+function derivedWorker(card) {
+  const w = card.status && card.status.worker;
+  if (!w || !w.id) return { id: null, state: 'absent' };
+  let state = w.state;
+  if ((state === 'working' || state === 'needs-you') && w.expires && Date.parse(w.expires) <= Date.now()) state = 'idle';
+  return { id: w.id, state, expires: w.expires };
 }
-setInterval(() => { for (const res of sseClients) res.write(': ping\n\n'); }, 25000).unref();
+function lastCardReadMs(card, user) {
+  const r = board.reads[String(user || 'user').slice(0, 60)];
+  const ts = r && r.threads && r.threads['card:' + card.id];
+  return ts ? Date.parse(ts) : 0;
+}
+function cardStatus(card, user) {
+  const thread = card.thread || [];
+  const last = thread.length ? thread[thread.length - 1] : null;
+  const owed = !!(last && last.author === 'user'); // latest thread message is the user's, unanswered
+  const readMs = lastCardReadMs(card, user);
+  let unread = false;
+  for (const m of thread) if (m.author !== 'user' && Date.parse(m.ts) > readMs) { unread = true; break; }
+  if (!unread) for (const e of card.events || []) if (e.level === 1 && Date.parse(e.ts) > readMs) { unread = true; break; }
+  return { worker: derivedWorker(card), owed, unread };
+}
+// Serialization view: cards go out with the derived `status` attached; the
+// stored board keeps only the raw lease.
+function publicCard(card, user) {
+  const status = cardStatus(card, user);
+  const out = Object.assign({}, card, { status });
+  // legacy-compat: retire in API cut — the current UI reads attributes.worker for
+  // the tile stripe; mirror the derived worker state into the view whenever a
+  // status lease record exists (cards never touched by status.set keep whatever
+  // the feeder wrote into attributes.worker).
+  if (card.status && 'worker' in card.status) {
+    const at = Object.assign({}, card.attributes);
+    if (status.worker.state === 'absent') delete at.worker;
+    else at.worker = status.worker.state;
+    out.attributes = at;
+  }
+  return out;
+}
+function publicBoard(user) {
+  return Object.assign({}, board, { cards: board.cards.map((c) => publicCard(c, user)) });
+}
 
-// ---------- awaiting-agent tracking (transient typing indicator) ----------
-// target -> epoch ms it ENTERED awaiting (kept at the oldest unanswered message).
-// Past AWAITING_STALE_SECS (default 180; env-overridable for tests) a target is
-// also reported "stale": the UI swaps the healthy typing animation for a distinct
-// "no response yet — may be stuck" state, so a dropped message can't look like
-// healthy typing forever.
+// status.set — the ONLY writer of card.status.worker.
+function setStatus(card, body) {
+  if (!body || !('worker' in body)) return { error: 'worker required: {id, state} (or null / state "absent" to clear)' };
+  const w = body.worker;
+  if (w === null || (w && typeof w === 'object' && w.state === 'absent')) {
+    card.status = { worker: null };
+  } else {
+    if (!w || typeof w !== 'object') return { error: 'worker must be {id, state} or null' };
+    if (!WORKER_STATES.includes(w.state)) return { error: 'bad worker.state (use ' + WORKER_STATES.join('|') + ')' };
+    const id = String(w.id || '').trim();
+    if (!id) return { error: 'worker.id required for state ' + w.state };
+    let ttl = WORKER_TTL_SECS;
+    if (body.ttl !== undefined) {
+      ttl = Number(body.ttl);
+      if (!Number.isFinite(ttl) || ttl <= 0) return { error: 'bad ttl (seconds > 0)' };
+    }
+    card.status = { worker: { id: id.slice(0, 120), state: w.state, expires: new Date(Date.now() + ttl * 1000).toISOString() } };
+  }
+  card.updated = now();
+  return { ok: true };
+}
+
+// legacy-compat: retire in API cut — the v2 UI reads SSE `status` events and the
+// `awaiting`/`stale` arrays on GET /api/status (typing balloon + "may be stuck").
+// Both are now a thin mapping FROM the status model: awaiting := targets where
+// `owed` (main chat uses the same latest-message rule), entered at the oldest
+// unanswered user message. Derived from persisted threads, so unlike the old
+// in-memory Map this survives a server restart.
 const AWAITING_STALE_SECS = parseInt(process.env.BRIDGE_AWAITING_STALE_SECS, 10) || 180;
-const awaiting = new Map(); // targets with user feedback not yet answered by an agent message
+function owedSinceMs(thread) {
+  let since = null;
+  for (const m of thread || []) {
+    if (m.author === 'user') { if (since == null) since = Date.parse(m.ts); }
+    else since = null;
+  }
+  return since;
+}
+function awaitingEntries() {
+  const out = [];
+  const cs = owedSinceMs(board.chat);
+  if (cs != null) out.push(['chat', cs]);
+  for (const c of board.cards) {
+    const s = owedSinceMs(c.thread);
+    if (s != null) out.push(['card:' + c.id, s]);
+  }
+  return out;
+}
+function awaitingTargets() { return awaitingEntries().map(([t]) => t); }
 function staleTargets() {
   const cutoff = Date.now() - AWAITING_STALE_SECS * 1000;
-  return Array.from(awaiting).filter(([, t]) => t <= cutoff).map(([k]) => k);
+  return awaitingEntries().filter(([, t]) => t <= cutoff).map(([t]) => t);
 }
 function statusEvent() {
-  return 'event: status\ndata: ' + JSON.stringify({ awaiting: Array.from(awaiting.keys()), stale: staleTargets() }) + '\n\n';
+  return 'event: status\ndata: ' + JSON.stringify({ awaiting: awaitingTargets(), stale: staleTargets() }) + '\n\n';
 }
+
+// ---------- SSE clients ----------
+const sseClients = new Set();
 let lastStaleKey = '';
+function broadcast() {
+  lastStaleKey = staleTargets().join('\n');
+  const payload = 'event: board\ndata: ' + JSON.stringify(publicBoard('user')) + '\n\n' + statusEvent();
+  for (const res of sseClients) res.write(payload);
+}
 function broadcastStatus() {
   lastStaleKey = staleTargets().join('\n');
   const payload = statusEvent();
   for (const res of sseClients) res.write(payload);
-}
-function setAwaiting(target, on) {
-  const changed = on ? !awaiting.has(target) : awaiting.delete(target);
-  if (on && !awaiting.has(target)) awaiting.set(target, Date.now()); // repeats keep the original entry time
-  if (changed) broadcastStatus();
-}
-function pruneAwaiting() {
-  let changed = false;
-  for (const t of Array.from(awaiting.keys())) if (!threadFor(t)) { awaiting.delete(t); changed = true; }
-  if (changed) broadcastStatus();
 }
 // Staleness develops with time, not with events — push a status when a target
 // crosses the threshold (or a stale one clears), without rebroadcasting otherwise.
 setInterval(() => {
   if (staleTargets().join('\n') !== lastStaleKey) broadcastStatus();
 }, 5000).unref();
+setInterval(() => { for (const res of sseClients) res.write(': ping\n\n'); }, 25000).unref();
 
 // ---------- helpers ----------
 function sendJson(res, code, obj) {
@@ -314,10 +409,7 @@ function createCard(body, actorDefault) {
   card.events.push(mkEvent({ text: 'created in ' + columnTitle(column), actor, level: 2 }, { kind: 'info' }));
   board.cards.push(card);
   registerCardLabels();
-  if (actor !== 'agent') {
-    pushFeedback({ kind: 'card-created', target: 'card:' + id, text: title, column });
-    setAwaiting('card:' + id, true);
-  }
+  if (actor !== 'agent') pushFeedback({ kind: 'card-created', target: 'card:' + id, text: title, column });
   return { card };
 }
 
@@ -395,13 +487,14 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p.startsWith('/ui/')) return serveStatic(res, p.slice(4));
 
     // ----- reads -----
-    if (route === 'GET /api/board') return sendJson(res, 200, board);
+    if (route === 'GET /api/board') return sendJson(res, 200, publicBoard(url.searchParams.get('user') || 'user'));
     if (route === 'GET /api/config') return sendJson(res, 200, userConfig());
     if (route === 'GET /api/status') {
       return sendJson(res, 200, {
         board: opts.board, port: opts.port, cards: board.cards.length, seq: board.seq,
-        feedback_seq: fseq, feedback_ack: ackSeq, awaiting: Array.from(awaiting.keys()),
-        stale: staleTargets(), pid: process.pid,
+        feedback_seq: fseq, feedback_ack: ackSeq,
+        awaiting: awaitingTargets(), stale: staleTargets(), // legacy-compat: retire in API cut (derived from owed)
+        pid: process.pid,
       });
     }
     if (route === 'GET /api/archive') {
@@ -423,18 +516,24 @@ const server = http.createServer(async (req, res) => {
       const r = createCard(body);
       if (r.error) return sendJson(res, r.code || 400, { error: r.error });
       saveBoard(); broadcast();
-      return sendJson(res, 200, { ok: true, card: r.card });
+      return sendJson(res, 200, { ok: true, card: publicCard(r.card, 'user') });
     }
-    const cardRoute = /^\/api\/cards\/([^/]+)(\/(move|events|archive))?$/.exec(p);
+    const cardRoute = /^\/api\/cards\/([^/]+)(\/(move|events|archive|status))?$/.exec(p);
     if (cardRoute) {
       const card = findCard(decodeURIComponent(cardRoute[1]));
       if (!card) return sendJson(res, 404, { error: 'unknown card: ' + decodeURIComponent(cardRoute[1]) });
       const sub = cardRoute[3];
-      if (!sub && req.method === 'GET') return sendJson(res, 200, card);
+      if (!sub && req.method === 'GET') return sendJson(res, 200, publicCard(card, url.searchParams.get('user') || 'user'));
       if (!sub && req.method === 'PATCH') {
         patchCard(card, JSON.parse(await readBody(req) || '{}'));
         saveBoard(); broadcast();
-        return sendJson(res, 200, { ok: true, card });
+        return sendJson(res, 200, { ok: true, card: publicCard(card, 'user') });
+      }
+      if (sub === 'status' && req.method === 'POST') { // status.set(card, worker{id, state}, ttl?)
+        const r = setStatus(card, JSON.parse(await readBody(req) || '{}'));
+        if (r.error) return sendJson(res, 400, { error: r.error });
+        saveBoard(); broadcast();
+        return sendJson(res, 200, { ok: true, status: cardStatus(card, 'user') });
       }
       if (sub === 'move' && req.method === 'POST') {
         const r = moveCard(card, JSON.parse(await readBody(req) || '{}'));
@@ -453,7 +552,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (sub === 'archive' && req.method === 'POST') {
         const r = archiveCard(card, JSON.parse(await readBody(req) || '{}'));
-        saveBoard(); broadcast(); pruneAwaiting();
+        saveBoard(); broadcast();
         return sendJson(res, 200, r);
       }
       return sendJson(res, 405, { error: 'method not allowed' });
@@ -512,7 +611,7 @@ const server = http.createServer(async (req, res) => {
         const ev = mkEvent({ text: text.slice(0, 200), actor: msg.author, level: body.level, kind: body.kind }, { level: 1, kind: 'info' });
         board.events.push(ev);
       }
-      saveBoard(); broadcast(); setAwaiting(target, false);
+      saveBoard(); broadcast(); // an agent reply clears derived owed/awaiting via broadcast
       return sendJson(res, 200, { ok: true });
     }
     if (route === 'POST /api/feedback') { // human -> agent
@@ -530,7 +629,7 @@ const server = http.createServer(async (req, res) => {
         if (card) { card.updated = now(); if (!card.threadStart) card.threadStart = msg.ts; }
       }
       const ev = pushFeedback({ kind: 'message', target, text });
-      saveBoard(); broadcast(); setAwaiting(target, true);
+      saveBoard(); broadcast(); // user message flips derived owed/awaiting via broadcast
       return sendJson(res, 200, { ok: true, seq: ev.seq });
     }
 
@@ -626,7 +725,7 @@ const server = http.createServer(async (req, res) => {
     // ----- SSE -----
     if (route === 'GET /api/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-      res.write('event: board\ndata: ' + JSON.stringify(board) + '\n\n');
+      res.write('event: board\ndata: ' + JSON.stringify(publicBoard('user')) + '\n\n');
       res.write(statusEvent());
       sseClients.add(res);
       req.on('close', () => sseClients.delete(res));
