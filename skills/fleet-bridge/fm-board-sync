@@ -267,10 +267,23 @@ function planHome(home, owner, board) {
     aliases.get(taskId) || (owner === 'firstmate' ? taskId : owner + ':' + taskId);
   const boardCard = (id) => (board.cards || []).find((c) => c.id === id);
 
-  // Feed the worker stripe for one card. `card` may be null (no board card and
-  // not being created): nothing to feed then. undefined state = leave as-is,
-  // but still ours (protects it from the stale-worker sweep in main()).
+  // A card that is an ALIAS TARGET is owned, for worker purposes, by the
+  // aliasing (rework) task alone. An alias line "<rework-task> <card-id>" means
+  // the rework task rides that existing card; the aliasing task's live window is
+  // authoritative. A different, same-named ORIGINAL task (e.g. the torn-down
+  // task the card was born from) must NOT also feed worker onto that card, or
+  // the two sources fight per run and the stripe flickers idle <-> gone. Cards
+  // reached only via the default id mapping (not an alias) are unaffected.
+  const aliasTargetCards = new Set(aliases.values());
+
+  // Feed the worker stripe for one card, deterministically: at most ONE worker
+  // decision per card per run. `card` may be null (no board card and not being
+  // created): nothing to feed then. undefined state = leave as-is, but still
+  // ours (protects it from the stale-worker sweep in main()). A second attempt
+  // to decide the same card in one run is ignored (the first, authoritative
+  // source wins); callers order the authoritative source first.
   const feedWorker = (id, card, w) => {
+    if (plan.workerDecided.has(id)) return; // already decided this run — no double-write
     plan.workerDecided.add(id);
     if (w === undefined || !card) return;
     const cur = (card.attributes || {}).worker;
@@ -288,16 +301,38 @@ function planHome(home, owner, board) {
   for (const [id, m] of metas) {
     if (m.kind === 'secondmate') {
       live.delete(id);
-      // No card is created for a secondmate self-record, but if a card exists
-      // for it (alias or direct id), feed its worker stripe from the live pane.
-      const cid = cardId(id);
-      feedWorker(cid, boardCard(cid), workerState(m, parseStatus(stateDir, id)));
       continue;
     }
     const t = live.get(id) || { title: id, repo: null, kind: null };
     if (m.kind) t.kind = m.kind;
     if (!t.repo && m.project) t.repo = path.basename(m.project);
     live.set(id, t);
+  }
+
+  // Worker stripe is decided ALIAS-FIRST so the aliasing (rework) task is the
+  // authoritative source for an alias-target card, before any same-named
+  // original task (whose torn-down window would otherwise clear that card).
+  // feedWorker() is idempotent per card, so the first (alias) decision wins and
+  // the original task's later attempt on the same card is a no-op. A task
+  // reaching a card by the default id mapping (not through an alias) is not
+  // pre-decided here, so non-aliased cards behave exactly as before.
+  for (const [taskId, targetCard] of aliases) {
+    const m = metas.get(taskId);
+    if (!m) continue; // alias to a task with no meta: nothing live to feed
+    const card = boardCard(targetCard);
+    if (!card) continue; // alias target not on the board yet (created below if it is live work)
+    feedWorker(targetCard, card, workerState(m, parseStatus(stateDir, taskId)));
+  }
+
+  // Secondmate self-records create no card, but a card may exist for one (alias
+  // or direct id); feed its worker stripe from the live pane. The alias-first
+  // loop above already covered any secondmate task used as an alias source, and
+  // feedWorker() is idempotent, so this only fills self-record cards not yet
+  // decided.
+  for (const [id, m] of metas) {
+    if (m.kind !== 'secondmate') continue;
+    const cid = cardId(id);
+    feedWorker(cid, boardCard(cid), workerState(m, parseStatus(stateDir, id)));
   }
 
   // pending events/attrs for a card id, deduped later against board card events
