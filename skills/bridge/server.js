@@ -203,21 +203,41 @@ function broadcast() {
 setInterval(() => { for (const res of sseClients) res.write(': ping\n\n'); }, 25000).unref();
 
 // ---------- awaiting-agent tracking (transient typing indicator) ----------
-const awaiting = new Set(); // targets with user feedback not yet answered by an agent message
-function statusEvent() {
-  return 'event: status\ndata: ' + JSON.stringify({ awaiting: Array.from(awaiting) }) + '\n\n';
+// target -> epoch ms it ENTERED awaiting (kept at the oldest unanswered message).
+// Past AWAITING_STALE_SECS (default 180; env-overridable for tests) a target is
+// also reported "stale": the UI swaps the healthy typing animation for a distinct
+// "no response yet — may be stuck" state, so a dropped message can't look like
+// healthy typing forever.
+const AWAITING_STALE_SECS = parseInt(process.env.BRIDGE_AWAITING_STALE_SECS, 10) || 180;
+const awaiting = new Map(); // targets with user feedback not yet answered by an agent message
+function staleTargets() {
+  const cutoff = Date.now() - AWAITING_STALE_SECS * 1000;
+  return Array.from(awaiting).filter(([, t]) => t <= cutoff).map(([k]) => k);
 }
-function broadcastStatus() { const payload = statusEvent(); for (const res of sseClients) res.write(payload); }
+function statusEvent() {
+  return 'event: status\ndata: ' + JSON.stringify({ awaiting: Array.from(awaiting.keys()), stale: staleTargets() }) + '\n\n';
+}
+let lastStaleKey = '';
+function broadcastStatus() {
+  lastStaleKey = staleTargets().join('\n');
+  const payload = statusEvent();
+  for (const res of sseClients) res.write(payload);
+}
 function setAwaiting(target, on) {
   const changed = on ? !awaiting.has(target) : awaiting.delete(target);
-  if (on) awaiting.add(target);
+  if (on && !awaiting.has(target)) awaiting.set(target, Date.now()); // repeats keep the original entry time
   if (changed) broadcastStatus();
 }
 function pruneAwaiting() {
   let changed = false;
-  for (const t of Array.from(awaiting)) if (!threadFor(t)) { awaiting.delete(t); changed = true; }
+  for (const t of Array.from(awaiting.keys())) if (!threadFor(t)) { awaiting.delete(t); changed = true; }
   if (changed) broadcastStatus();
 }
+// Staleness develops with time, not with events — push a status when a target
+// crosses the threshold (or a stale one clears), without rebroadcasting otherwise.
+setInterval(() => {
+  if (staleTargets().join('\n') !== lastStaleKey) broadcastStatus();
+}, 5000).unref();
 
 // ---------- helpers ----------
 function sendJson(res, code, obj) {
@@ -379,7 +399,8 @@ const server = http.createServer(async (req, res) => {
     if (route === 'GET /api/status') {
       return sendJson(res, 200, {
         board: opts.board, port: opts.port, cards: board.cards.length, seq: board.seq,
-        feedback_seq: fseq, feedback_ack: ackSeq, awaiting: Array.from(awaiting), pid: process.pid,
+        feedback_seq: fseq, feedback_ack: ackSeq, awaiting: Array.from(awaiting.keys()),
+        stale: staleTargets(), pid: process.pid,
       });
     }
     if (route === 'GET /api/archive') {

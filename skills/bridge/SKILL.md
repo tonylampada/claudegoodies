@@ -66,7 +66,8 @@ any agent with shell access can drive it.
    - `card-moved` — the human moved a card (`from`/`column` fields): a handoff or a
      handback, act accordingly.
 4. Always answer feedback with `say` to the same target — the UI shows "agent is working…"
-   until the reply lands.
+   until the reply lands, and flips to an amber "may be stuck" warning if no reply comes
+   within ~3 minutes (`BRIDGE_AWAITING_STALE_SECS` on the server overrides).
 
 Rules:
 - Message/body text goes via `--text-file`/`--body-file` or stdin — never interpolated

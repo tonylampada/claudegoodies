@@ -129,6 +129,7 @@ function connect() {
   es.addEventListener('status', (e) => {
     const st = JSON.parse(e.data);
     S.awaiting = new Set(st.awaiting || []);
+    S.stale = new Set(st.stale || []);
     renderStatusDot();
     render();
   });

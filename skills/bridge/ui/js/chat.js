@@ -62,7 +62,14 @@ function msgHtml(m) {
   return '<div class="msg ' + (mine ? 'user' : 'agent') + '">' + body +
     '<span class="ts">' + who + hhmm(m.ts) + '</span>' + speakBtn + '</div>';
 }
-function typingHtml() {
+function typingHtml(stale) {
+  // stale = awaiting past the server threshold: a DISTINCT "may be stuck" state,
+  // static and amber, so a dropped message never looks like healthy typing forever
+  if (stale) {
+    return '<div class="msg agent typing stale" title="no response for a while — the message may not have reached the agent">' +
+      '<span class="twarn">⚠</span>' +
+      '<span class="lbl">no response yet — the agent may be stuck</span></div>';
+  }
   return '<div class="msg agent typing" title="the agent is working on this">' +
     '<span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>' +
     '<span class="lbl">agent is working…</span></div>';
@@ -127,7 +134,7 @@ export function renderChat() {
   } else {
     for (const it of mainFeedItems()) push(it.ts, it.html);
   }
-  if (S.awaiting.has(currentTarget())) html += typingHtml();
+  if (S.awaiting.has(currentTarget())) html += typingHtml(S.stale.has(currentTarget()));
   feedEl.innerHTML = html || '<div class="empty">no messages yet</div>';
   if (switched) scrollFeedToBottom(); // deferred: the feed may still be hidden this frame
   else if (pinned) feedEl.scrollTop = feedEl.scrollHeight;

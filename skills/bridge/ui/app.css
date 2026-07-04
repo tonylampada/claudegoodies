@@ -127,6 +127,10 @@ input, textarea, select { font: inherit; color: var(--text); }
 .msg.typing .tdot:nth-child(3) { animation-delay: .4s; }
 .msg.typing .lbl { color: var(--faint); font-size: 11px; margin-left: 4px; }
 @keyframes typing-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+/* stale-awaiting: the "may be stuck" state — static amber, clearly NOT healthy typing */
+.msg.typing.stale { border-color: var(--warn); }
+.msg.typing.stale .twarn { color: var(--warn); font-size: 13px; line-height: 1; }
+.msg.typing.stale .lbl { color: var(--warn); }
 /* per-message speak button (agent bubbles only): hover-revealed on desktop */
 .msg.agent { position: relative; }
 .msg-speak {
@@ -228,6 +232,8 @@ input, textarea, select { font: inherit; color: var(--text); }
 .tile .t-typing .tdot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); animation: typing-blink 1.2s infinite; }
 .tile .t-typing .tdot:nth-child(2) { animation-delay: .2s; }
 .tile .t-typing .tdot:nth-child(3) { animation-delay: .4s; }
+/* stale-awaiting corner: static amber ⚠ mirroring the chat's "may be stuck" bubble */
+.tile .t-typing.stale { color: var(--warn); font-size: 11px; line-height: 1; margin-top: 3px; }
 .label {
   font-size: 13px; padding: 2px 8px; border-radius: 4px; background: var(--panel2);
   border: 1px solid var(--faint); color: var(--dim); cursor: pointer; white-space: nowrap;

@@ -53,11 +53,11 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | `GET /` , `GET /ui/*` | the web UI |
 | `GET /api/board` | full board doc |
 | `GET /api/cards/<id>` | one card |
-| `GET /api/status` | `{board, port, cards, seq, feedback_seq, feedback_ack, awaiting, pid}` |
+| `GET /api/status` | `{board, port, cards, seq, feedback_seq, feedback_ack, awaiting, stale, pid}` |
 | `GET /api/archive?limit=N` | last N archived records, newest first |
 | `GET /api/notifications?user=U` | level-1 events with read flags, `{items, unread}` |
 | `GET /api/config` | user config (voice filter) |
-| `GET /api/events` | SSE: `board` (full doc on every change) + `status` (`{awaiting}`) |
+| `GET /api/events` | SSE: `board` (full doc on every change) + `status` (`{awaiting, stale}`) |
 | `GET /api/poll[?since=N][&nowait=1]` | long-poll the human→agent feedback queue |
 | `POST /api/poll/ack` | `{seq}` — commit the ack cursor (see Feedback queue) |
 
@@ -85,7 +85,7 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | Route | Body | Notes |
 |---|---|---|
 | `POST /api/message` | `{target, text\|text_md, author?}` | agent → human. Target `chat` or `card:<id>`. A main-chat agent message also emits a level-1 💡 event (free-form notification). Clears the target's "awaiting" flag. |
-| `POST /api/feedback` | `{target, text}` | human → agent: appends to the thread, queues a durable `message` feedback, sets "awaiting" (typing indicator) |
+| `POST /api/feedback` | `{target, text}` | human → agent: appends to the thread, queues a durable `message` feedback, sets "awaiting" (typing indicator). A target awaiting longer than the stale threshold (180s; `BRIDGE_AWAITING_STALE_SECS` overrides) is also reported `stale` — the UI shows a "may be stuck" warning instead of healthy typing. |
 | `POST /api/notifications/read` | `{user?, seqs?[], all?}` | persist notification read state |
 | `POST /api/read` | `{user?, target, ts?}` | persist a thread read marker (unread badges) |
 

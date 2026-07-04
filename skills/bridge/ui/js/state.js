@@ -5,6 +5,7 @@ export const USER = 'user';
 export const S = {
   doc: null,               // full board doc from the server
   awaiting: new Set(),     // targets awaiting an agent reply (typing indicator)
+  stale: new Set(),        // awaiting targets past the server's stale threshold (may be stuck)
   connected: false,
   chatMode: { mode: 'main' },   // {mode:'main'} | {mode:'card', id}
   openCardId: null,        // detail panel
