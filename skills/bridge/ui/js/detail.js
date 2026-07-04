@@ -39,6 +39,33 @@ export function closeDetail() {
 export function detailOpen() { return !!S.openCardId; }
 
 document.getElementById('dt-close').onclick = closeDetail;
+
+// Click-outside dismiss (desktop side-panel only). On mobile the detail is
+// full-screen (100vw), so there is no "outside" — the ✕ and Escape stay the only
+// close affordances there. A click that lands outside #detail closes it, reusing
+// the one closeDetail path (which also returns the left chat to main on desktop).
+// Excluded from "outside": a .tile (its own handler switches to that card's
+// detail — a switch, not a close) and the transient popovers (move menu, label
+// picker, notif/settings panels) so dismissing one of those never also closes the
+// detail. If a rename is in progress, commit it (like Enter/blur) before
+// closing rather than discarding it: commitTitleEdit reads card(S.openCardId) so
+// it must run before closeDetail nulls it, and it clears editingTitle so
+// closeDetail's own stopTitleEdit is then a no-op — no double-fire.
+document.addEventListener('click', (e) => {
+  if (!S.openCardId || !isDesktop()) return;
+  const t = e.target;
+  if (el.contains(t)) return;                 // inside the panel — stays open
+  if (t.closest && (
+    t.closest('.tile') ||                     // another card — switch, handled by its onclick
+    t.closest('#move-menu') ||                // transient popovers dismiss on their own
+    t.closest('#notif-panel') ||
+    t.closest('#settings-panel') ||
+    t.closest('#label-picker') ||
+    t.closest('[data-label-add]')
+  )) return;
+  if (editingTitle) commitTitleEdit();        // save the in-progress rename first
+  closeDetail();
+});
 document.getElementById('dt-talk').onclick = () => {
   if (S.openCardId) {
     const id = S.openCardId;
