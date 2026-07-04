@@ -1,6 +1,6 @@
 // chat panel: unified main feed (messages + card-thread bubbles anchored at thread
 // start), whole-window mode switch into a card thread, premium composer.
-import { S, card, cards, render, threadUnread, targetOwed, targetOwedStale, USER } from './state.js';
+import { S, card, cards, cardStatus, cardActivityTs, render, threadUnread, targetOwed, targetOwedStale, USER } from './state.js';
 import { api } from './api.js';
 import { esc, hhmm, dayLabel, cardEmoji } from './util.js';
 import { md } from './md.js';
@@ -160,16 +160,20 @@ export function renderChat() {
   maybeMarkRead(isCard ? c : null);
 }
 
-// mark the visible thread read (server-persisted) — debounced, loop-safe
+// mark the visible thread read (server-persisted) — debounced, loop-safe.
+// Card unread also derives from level-1 EVENTS, not just thread messages, so a
+// card target uses the server-derived card.status.unread (and the shared
+// cardActivityTs dedupe key); message-based gating alone would leave an
+// event-only unread dotted forever. Main chat keeps the message rule.
 let lastMarked = { target: '', ts: '' };
 function maybeMarkRead(c) {
   if (document.hidden) return;
   if (window.innerWidth <= 760 && S.view !== 'chat') return; // thread not visible
   const target = currentTarget();
   const msgs = target === 'chat' ? ((S.doc && S.doc.chat) || []) : ((c && c.thread) || []);
-  const unread = threadUnread(target, msgs);
+  const unread = target === 'chat' ? threadUnread(target, msgs) : !!(c && cardStatus(c).unread);
   if (!unread) return;
-  const lastTs = msgs.length ? msgs[msgs.length - 1].ts : '';
+  const lastTs = target === 'chat' ? (msgs.length ? msgs[msgs.length - 1].ts : '') : cardActivityTs(c);
   if (lastMarked.target === target && lastMarked.ts === lastTs) return; // already sent
   lastMarked = { target, ts: lastTs };
   api.markThreadRead(target).catch(() => { lastMarked = { target: '', ts: '' }; });

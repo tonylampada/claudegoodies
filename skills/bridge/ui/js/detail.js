@@ -1,5 +1,5 @@
 // card detail: attributes header + markdown body + event timeline (chat lives in the chat panel)
-import { S, USER, card, cardStatus, render, toggleFilter, filterSelected } from './state.js';
+import { S, card, cardStatus, cardActivityTs, render, toggleFilter, filterSelected } from './state.js';
 import { esc, hhmm, ago, cardEmoji, ownerColor, KIND_EMOJI, cardPrs, prChipHtml, cardArtifacts } from './util.js';
 import { md } from './md.js';
 import { api } from './api.js';
@@ -132,9 +132,7 @@ let lastMarked = { id: '', ts: '' };
 function maybeMarkCardRead(c) {
   if (document.hidden) return;
   if (!cardStatus(c).unread) return; // server-derived; false once the marker lands
-  let ts = '';
-  for (const m of c.thread || []) if (m.author !== USER && m.ts > ts) ts = m.ts;
-  for (const e of c.events || []) if (e.level === 1 && e.ts > ts) ts = e.ts;
+  const ts = cardActivityTs(c);
   if (lastMarked.id === c.id && lastMarked.ts === ts) return; // already sent
   lastMarked = { id: c.id, ts };
   api.markThreadRead('card:' + c.id).catch(() => { lastMarked = { id: '', ts: '' }; });

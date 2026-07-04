@@ -37,6 +37,15 @@ export function threadUnread(target, msgs) {
   return (msgs || []).filter((m) => m.author !== USER && (!ts || m.ts > ts)).length;
 }
 export function cardUnread(c) { return threadUnread('card:' + c.id, c.thread); }
+// newest unread-relevant ts on a card: agent thread messages + level-1 events —
+// the same inputs the server derives card unread from. Used as the read-marker
+// dedupe key so each new unread-relevant item allows exactly one POST.
+export function cardActivityTs(c) {
+  let ts = '';
+  for (const m of (c && c.thread) || []) if (m.author !== USER && m.ts > ts) ts = m.ts;
+  for (const e of (c && c.events) || []) if (e.level === 1 && e.ts > ts) ts = e.ts;
+  return ts;
+}
 
 // ---------- status (card.status is the single source; no other status feed) ----------
 export function cardStatus(c) {
