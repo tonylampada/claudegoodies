@@ -98,6 +98,8 @@ function stripEmoji(s) { // spoken text only
 export function speak(text) {
   if (!voiceOn || !window.speechSynthesis) return;
   const plain = stripEmoji(text.replace(/```[\s\S]*?```/g, ' code ').replace(/[`*#\[\]()]/g, ' ').replace(/https?:\S+/g, ' link '));
+  if (!plain) return;
+  speechSynthesis.resume(); // engines can auto-pause; wake it before speaking
   speechSynthesis.speak(utter(plain.slice(0, 600)));
 }
 function setVoiceOn(on) {
@@ -107,10 +109,36 @@ function setVoiceOn(on) {
   document.getElementById('voice-tools').classList.toggle('dim', !on);
   try { if (on) localStorage.setItem(VOICE_ON_KEY, '1'); else localStorage.removeItem(VOICE_ON_KEY); } catch (e) {}
 }
-voiceBtn.onclick = () => setVoiceOn(!voiceOn);
-try { if (localStorage.getItem(VOICE_ON_KEY) === '1') setVoiceOn(true); } catch (e) {}
+// speechSynthesis is gesture-gated: after load it stays muted until a real user
+// interaction actually invokes speak(), so incoming messages silently don't voice
+// (especially when the toggle was already ON from a previous session). Prime it —
+// speak a silent, canceled primer — inside a genuine gesture to unlock it.
+let primed = false;
+function primeVoice() {
+  if (primed || !window.speechSynthesis) return;
+  try {
+    speechSynthesis.resume(); // some engines start paused
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    speechSynthesis.speak(u);
+    primed = true;
+  } catch (e) {}
+}
+// Fallback: unlock on the very first user gesture anywhere on the page.
+function firstGestureUnlock() {
+  primeVoice();
+  if (primed) for (const ev of ['pointerdown', 'keydown', 'touchend']) document.removeEventListener(ev, firstGestureUnlock);
+}
+for (const ev of ['pointerdown', 'keydown', 'touchend']) document.addEventListener(ev, firstGestureUnlock, { passive: true });
+
+voiceBtn.onclick = () => {
+  primeVoice(); // this click is a gesture — unlock so subsequent messages voice
+  setVoiceOn(!voiceOn);
+};
+try { if (localStorage.getItem(VOICE_ON_KEY) === '1') setVoiceOn(true); } catch (e) {} // restore toggle; unlock waits for a gesture
 document.getElementById('voice-test').onclick = () => {
   if (!window.speechSynthesis) return;
+  primed = true; // an explicit spoken utterance in this gesture also unlocks
   speechSynthesis.cancel();
   speechSynthesis.speak(utter('Hello, this is my voice.'));
 };
