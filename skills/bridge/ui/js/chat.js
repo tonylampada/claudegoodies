@@ -18,11 +18,24 @@ export function onOpenCard(fn) { detailOpener = fn; }
 export function currentTarget() {
   return S.chatMode.mode === 'card' ? 'card:' + S.chatMode.id : 'chat';
 }
-export function openCardThread(id) {
+// Switch the chat panel into a card's thread. The one owner of the card
+// mode-switch: the "talk" button and the desktop card-detail sync both go through
+// here. opts.silent (desktop detail-sync) skips the mobile tab-switch and the
+// input focus, so selecting a card doesn't steal focus or flip the mobile tab.
+export function openCardThread(id, opts) {
   S.chatMode = { mode: 'card', id };
-  S.view = 'chat'; // on mobile, switch to the chat tab
-  render();
-  inputEl.focus();
+  if (!(opts && opts.silent)) {
+    S.view = 'chat'; // on mobile, switch to the chat tab
+    render();
+    inputEl.focus();
+  } else {
+    render();
+  }
+}
+// Return the chat panel to the main conversation (used when a synced card detail
+// closes on desktop). Same mode representation as backToMain, no forked path.
+export function syncChatToMain() {
+  if (S.chatMode.mode === 'card') { S.chatMode = { mode: 'main' }; render(); }
 }
 export function backToMain() {
   S.chatMode = { mode: 'main' };

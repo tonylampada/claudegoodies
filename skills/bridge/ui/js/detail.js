@@ -4,8 +4,10 @@ import { esc, hhmm, ago, cardEmoji, ownerColor, KIND_EMOJI } from './util.js';
 import { md } from './md.js';
 import { api } from './api.js';
 import { labelChipHtml, labelColor, openLabelPicker, saveCardLabels } from './labels.js';
-import { openCardThread } from './chat.js';
+import { openCardThread, syncChatToMain } from './chat.js';
 import { openMoveMenu } from './board.js';
+
+const isDesktop = () => window.innerWidth > 760; // matches the chat.js layout breakpoint
 
 const el = document.getElementById('detail');
 const titleEl = document.getElementById('dt-title');
@@ -14,12 +16,24 @@ let editingTitle = false; // true while the inline title editor is open (guards 
 
 export function openDetail(id) {
   S.openCardId = id;
+  // Desktop: selecting a card also syncs the left chat into that card's thread,
+  // so its detail (right) and conversation (left) show side by side. Reuses the
+  // one thread-switch owner; silent = no mobile tab-flip / focus steal. Mobile
+  // keeps the tab layout untouched (chat switches only via the talk button).
+  if (isDesktop()) { openCardThread(id, { silent: true }); return; } // openCardThread renders
   render();
 }
 export function closeDetail() {
+  const wasId = S.openCardId;
   S.openCardId = null;
   if (editingTitle) stopTitleEdit();
   el.hidden = true;
+  // Desktop: closing a card-synced detail returns the left chat to the main
+  // conversation rather than stranding it on the just-closed card.
+  if (isDesktop() && wasId && S.chatMode.mode === 'card' && S.chatMode.id === wasId) {
+    syncChatToMain(); // renders
+    return;
+  }
   render();
 }
 export function detailOpen() { return !!S.openCardId; }
@@ -28,6 +42,10 @@ document.getElementById('dt-close').onclick = closeDetail;
 document.getElementById('dt-talk').onclick = () => {
   if (S.openCardId) {
     const id = S.openCardId;
+    // Desktop already shows the thread on the left (synced on select), so just
+    // focus that thread — keep the detail open for the side-by-side view. Mobile
+    // has no side-by-side, so switch the chat tab to the thread as before.
+    if (isDesktop()) { openCardThread(id); return; }
     closeDetail();
     openCardThread(id);
   }
