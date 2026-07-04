@@ -1,6 +1,6 @@
 // card detail: attributes header + markdown body + event timeline (chat lives in the chat panel)
 import { S, card, render, toggleFilter, filterSelected } from './state.js';
-import { esc, hhmm, ago, cardEmoji, ownerColor, KIND_EMOJI } from './util.js';
+import { esc, hhmm, ago, cardEmoji, ownerColor, KIND_EMOJI, cardPrs, prChipHtml, cardArtifacts } from './util.js';
 import { md } from './md.js';
 import { api } from './api.js';
 import { labelChipHtml, labelColor, openLabelPicker, saveCardLabels } from './labels.js';
@@ -140,12 +140,15 @@ export function renderDetail() {
   if (!editingTitle) titleEl.textContent = c.title || c.id; // don't clobber an in-progress rename
   document.getElementById('dt-sub').textContent = c.id + ' · created ' + ago(c.created) + ' ago · updated ' + ago(c.updated) + ' ago';
 
-  // attributes header (emoji shown up top already; owner gets its color)
+  // attributes header (emoji shown up top already; owner gets its color).
+  // prs and artifacts are structured lists with dedicated renderers below,
+  // so they are excluded from the generic key:value chips.
   const at = c.attributes || {};
   const attrsEl = document.getElementById('dt-attrs');
   attrsEl.innerHTML = Object.entries(at)
-    .filter(([k]) => k !== 'emoji')
-    .map(([k, v]) => attrHtml(k, v)).join('');
+    .filter(([k]) => k !== 'emoji' && k !== 'prs' && k !== 'artifacts')
+    .map(([k, v]) => attrHtml(k, v)).join('') +
+    cardPrs(c).map((pr) => prChipHtml(pr, true)).join('');
   if (at.owner) {
     for (const a of attrsEl.querySelectorAll('.attr')) {
       if (a.querySelector('.k').textContent === 'owner') {
@@ -182,6 +185,29 @@ export function renderDetail() {
 
   // body
   document.getElementById('dt-body').innerHTML = md(c.body || '');
+
+  // artifacts: attributes.artifacts [{uri, label}] — a simple label + uri list.
+  // file:// uris are not fetchable by the browser (server-side fetch/display is
+  // deferred), so those render as copy-on-click; http(s) uris open normally.
+  const artEl = document.getElementById('dt-artifacts');
+  const arts = cardArtifacts(c);
+  artEl.innerHTML = !arts.length ? '' :
+    '<div class="dt-arts-head">artifacts</div>' + arts.map((a) => {
+      const label = '<span class="a-label">' + esc(a.label || a.uri) + '</span>';
+      const uri = /^https?:\/\//.test(a.uri)
+        ? '<a class="a-uri" href="' + esc(a.uri) + '" target="_blank" rel="noopener">' + esc(a.uri) + '</a>'
+        : '<code class="a-uri" data-copy="' + esc(a.uri) + '" title="click to copy">' + esc(a.uri) + '</code>';
+      return '<div class="art">' + label + uri + '</div>';
+    }).join('');
+  artEl.querySelectorAll('.a-uri[data-copy]').forEach((n) => {
+    n.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(n.dataset.copy);
+        n.classList.add('copied');
+        setTimeout(() => n.classList.remove('copied'), 1200);
+      } catch (e) {}
+    };
+  });
 
   // event timeline (newest first)
   const evEl = document.getElementById('dt-events');

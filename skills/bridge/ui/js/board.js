@@ -1,7 +1,7 @@
 // board: columns of dense tiles, drag&drop, long-press move menu, new-card modal
 import { S, columns, cards, cardVisible, cardStatus, targetOwedStale, toggleFilter, filterSelected, render } from './state.js';
 import { api } from './api.js';
-import { esc, ago, cardEmoji, ownerColor } from './util.js';
+import { esc, ago, cardEmoji, ownerColor, cardPrs, prChipHtml } from './util.js';
 import { labelChipHtml } from './labels.js';
 import { openDetail } from './detail.js';
 
@@ -29,6 +29,8 @@ function tileHtml(c) {
     : (st.unread ? '<span class="t-unread" title="unread activity"></span>' : '');
   const hasLink = Object.entries(at).some(([k, v]) => k !== 'owner' && /^https?:\/\//.test(String(v)));
   const labels = (c.labels || []).map((n) => labelChipHtml(n, filterSelected('label', n))).join('');
+  // PR chips: attributes.prs [{url, state}] — one state-colored chip per entry
+  const prs = cardPrs(c).map((pr) => prChipHtml(pr)).join('');
   // worker-state stripe on the tile's LEFT edge — a PERSISTENT status signal,
   // deliberately separate from the transient top-right corner. Driven by
   // card.status.worker (the lease); only the known states get a stripe (whitelist,
@@ -38,12 +40,15 @@ function tileHtml(c) {
   const WORKER_STATES = { working: 'Working', 'needs-you': 'Needs you', idle: 'Idle' };
   const worker = st.worker && WORKER_STATES[st.worker.state] ? st.worker.state : '';
   const workerCls = worker ? ' worker worker-' + worker : ''; // worker value is whitelisted above
-  const workerTitle = worker ? ' title="worker: ' + esc(WORKER_STATES[worker]) + '"' : '';
+  const workerTitle = worker
+    ? ' title="worker: ' + esc(WORKER_STATES[worker]) + (st.worker.id ? ' — ' + esc(st.worker.id) : '') + '"'
+    : '';
   return '<div class="tile' + (c.id === S.openCardId ? ' open' : '') + workerCls + '" draggable="true" data-id="' + esc(c.id) + '"' + workerTitle + '>' +
     '<div class="t-row1"><span class="t-emoji">' + esc(cardEmoji(c)) + '</span>' +
     '<span class="t-title">' + esc(c.title || c.id) + '</span>' +
     cornerInd + '</div>' +
     (labels ? '<div class="t-labels">' + labels + '</div>' : '') +
+    (prs ? '<div class="t-prs">' + prs + '</div>' : '') +
     '<div class="t-foot">' +
     (owner ? '<span class="t-owner' + (filterSelected('owner', owner) ? ' active' : '') + '" data-owner="' + esc(owner) +
       '" title="filter by owner"><span class="dot" style="background:' + ownerColor(owner) + '"></span>' + esc(owner) + '</span>' : '') +
@@ -88,6 +93,7 @@ function wire() {
     el.onclick = (e) => {
       if (pressFired) { pressFired = false; return; } // long-press already handled
       const t = e.target;
+      if (t.closest('a')) return; // PR chip / link: let the anchor navigate, don't open detail
       if (t.classList.contains('label')) { toggleFilter('label', t.dataset.label); return; }
       const own = t.closest('.t-owner');
       if (own) { toggleFilter('owner', own.dataset.owner); return; }

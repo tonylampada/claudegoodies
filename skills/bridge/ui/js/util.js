@@ -44,3 +44,27 @@ export function ownerColor(name) {
   for (let i = 0; i < name.length; i++) h = ((h * 33) ^ name.charCodeAt(i)) >>> 0;
   return OWNER_PALETTE[h % OWNER_PALETTE.length];
 }
+
+// attributes.prs — [{url, state: open|merged|closed}] — the only PR source on a card
+const PR_STATES = new Set(['open', 'merged', 'closed']);
+export function cardPrs(card) {
+  const v = card && card.attributes && card.attributes.prs;
+  if (!Array.isArray(v)) return [];
+  return v.filter((e) => e && typeof e === 'object' && typeof e.url === 'string' && e.url);
+}
+// state is whitelisted before it reaches the class name (XSS-safe); unknown
+// states render as open. withState adds the state word for the roomier detail view.
+export function prChipHtml(pr, withState) {
+  const state = PR_STATES.has(pr.state) ? pr.state : 'open';
+  const m = /\/pull\/(\d+)\b/.exec(pr.url);
+  const label = (m ? '#' + m[1] : 'PR') + (withState ? ' · ' + state : '');
+  return '<a class="prchip pr-' + state + '" href="' + esc(pr.url) + '" target="_blank" rel="noopener"' +
+    ' title="' + esc(pr.url) + ' (' + state + ')">' + esc(label) + '</a>';
+}
+
+// attributes.artifacts — [{uri, label}] — resources hung on the card (briefs, docs)
+export function cardArtifacts(card) {
+  const v = card && card.attributes && card.attributes.artifacts;
+  if (!Array.isArray(v)) return [];
+  return v.filter((e) => e && typeof e === 'object' && typeof e.uri === 'string' && e.uri);
+}

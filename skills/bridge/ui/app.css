@@ -127,7 +127,7 @@ input, textarea, select { font: inherit; color: var(--text); }
 .msg.typing .tdot:nth-child(3) { animation-delay: .4s; }
 .msg.typing .lbl { color: var(--faint); font-size: 11px; margin-left: 4px; }
 @keyframes typing-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
-/* stale-awaiting: the "may be stuck" state — static amber, clearly NOT healthy typing */
+/* stale-owed: the "may be stuck" state — static amber, clearly NOT healthy typing */
 .msg.typing.stale { border-color: var(--warn); }
 .msg.typing.stale .twarn { color: var(--warn); font-size: 13px; line-height: 1; }
 .msg.typing.stale .lbl { color: var(--warn); }
@@ -232,8 +232,18 @@ input, textarea, select { font: inherit; color: var(--text); }
 .tile .t-typing .tdot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); animation: typing-blink 1.2s infinite; }
 .tile .t-typing .tdot:nth-child(2) { animation-delay: .2s; }
 .tile .t-typing .tdot:nth-child(3) { animation-delay: .4s; }
-/* stale-awaiting corner: static amber ⚠ mirroring the chat's "may be stuck" bubble */
+/* stale-owed corner: static amber ⚠ mirroring the chat's "may be stuck" bubble */
 .tile .t-typing.stale { color: var(--warn); font-size: 11px; line-height: 1; margin-top: 3px; }
+/* PR chips — attributes.prs [{url, state: open|merged|closed}], state-colored */
+.prchip {
+  display: inline-flex; align-items: center; font-family: var(--mono); font-size: 11px;
+  padding: 1px 8px; border: 1px solid; border-radius: 999px; line-height: 1.6; white-space: nowrap;
+}
+.prchip:hover { text-decoration: none; filter: brightness(1.25); }
+.pr-open { color: var(--ok); border-color: var(--ok); }
+.pr-merged { color: #c678dd; border-color: #c678dd; }
+.pr-closed { color: var(--danger); border-color: var(--danger); }
+.tile .t-prs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .label {
   font-size: 13px; padding: 2px 8px; border-radius: 4px; background: var(--panel2);
   border: 1px solid var(--faint); color: var(--dim); cursor: pointer; white-space: nowrap;
@@ -369,6 +379,25 @@ input, textarea, select { font: inherit; color: var(--text); }
   font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 1px;
   color: var(--faint); border-top: 1px solid var(--line); padding-top: 12px; margin-top: 4px;
 }
+/* artifacts list — attributes.artifacts [{uri, label}]; file:// uris copy on click */
+.dt-artifacts:empty { display: none; }
+.dt-arts-head {
+  font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--faint); border-top: 1px solid var(--line); padding-top: 12px; margin-top: 4px;
+}
+.dt-artifacts .art { display: flex; align-items: baseline; gap: 8px; padding: 7px 0 0; min-width: 0; }
+.dt-artifacts .art:last-child { padding-bottom: 14px; }
+.dt-artifacts .a-label { flex: none; font-size: 13px; }
+.dt-artifacts .a-uri {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
+}
+code.a-uri { cursor: copy; }
+code.a-uri:hover { color: var(--text); border-color: var(--line2); }
+code.a-uri.copied { color: var(--ok); border-color: var(--ok); }
+code.a-uri.copied::after { content: " copied"; }
+a.a-uri { color: var(--accent); }
 .dt-events { display: flex; flex-direction: column; padding: 10px 0 20px; }
 .ev { display: flex; gap: 10px; position: relative; padding: 0 0 14px 2px; }
 .ev::before { content: ""; position: absolute; left: 7.5px; top: 16px; bottom: 0; width: 1px; background: var(--line); }
