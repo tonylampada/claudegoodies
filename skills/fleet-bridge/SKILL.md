@@ -141,6 +141,11 @@ working, and the feeder turns each one into a 📣 `progress` event — this is 
 green card telling the captain what its worker is actually doing. This is a brief-content
 rule of THIS skill, not a change to the firstmate template's scaffold.
 
+**Preferences become memory.** When the captain expresses a durable preference in a board
+conversation (how work ships, what plans must spell out, reply style), record it in the
+captain's memory (`data/captain.md`) in the same turn — the skill applies it now, the
+memory keeps it applied when this skill is the only context that saw it.
+
 **Board = mirror.** Firstmate's files stay canonical; when they disagree, fix the board.
 
 **Placement test.** Makes sense for any agent running a board → `bridge`. Requires
