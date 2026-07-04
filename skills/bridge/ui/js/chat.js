@@ -4,6 +4,7 @@ import { S, card, cards, render, threadUnread, USER } from './state.js';
 import { api } from './api.js';
 import { esc, hhmm, dayLabel, cardEmoji } from './util.js';
 import { md } from './md.js';
+import { speakMessage } from './voice.js';
 
 const feedEl = document.getElementById('chat-feed');
 const titleEl = document.getElementById('chat-title');
@@ -31,14 +32,22 @@ backBtn.onclick = backToMain;
 openBtn.onclick = () => { if (S.chatMode.mode === 'card' && detailOpener) detailOpener(S.chatMode.id); };
 
 // ---------- feed rendering ----------
+// agent messages rendered this pass, in DOM order, so a post-render pass can wire
+// each .msg.agent[data-speak] button to the right message's text without ever
+// interpolating message text into markup (XSS-safe).
+let speakMsgs = [];
 function msgHtml(m) {
   const mine = m.author === USER;
   const body = mine
     ? '<div class="md pre">' + esc(m.text) + '</div>'
     : '<div class="md">' + md(m.text) + '</div>';
   const who = mine ? '' : esc(m.author) + ' · ';
+  // speak button only on agent bubbles; 🔊 icon, no message text in markup
+  const speakBtn = mine ? '' :
+    '<button class="msg-speak" type="button" data-speak title="read this message aloud" aria-label="read this message aloud">🔊</button>';
+  if (!mine) speakMsgs.push(m);
   return '<div class="msg ' + (mine ? 'user' : 'agent') + '">' + body +
-    '<span class="ts">' + who + hhmm(m.ts) + '</span></div>';
+    '<span class="ts">' + who + hhmm(m.ts) + '</span>' + speakBtn + '</div>';
 }
 function typingHtml() {
   return '<div class="msg agent typing" title="the agent is working on this">' +
@@ -93,6 +102,7 @@ export function renderChat() {
   const switched = viewKey !== lastViewKey;
   lastViewKey = viewKey;
   const pinned = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 48;
+  speakMsgs = [];
   let html = '', lastDay = '';
   const push = (ts, itemHtml) => {
     const day = ts ? dayLabel(ts) : '';
@@ -111,6 +121,19 @@ export function renderChat() {
 
   feedEl.querySelectorAll('.tbubble').forEach((b) => {
     b.onclick = () => openCardThread(b.dataset.card);
+  });
+
+  // wire speak buttons: .msg.agent[data-speak] in DOM order maps 1:1 to speakMsgs
+  const speakBtns = feedEl.querySelectorAll('.msg.agent [data-speak]');
+  speakBtns.forEach((btn, i) => {
+    const m = speakMsgs[i];
+    if (!m) return;
+    const key = currentTarget() + '|' + m.ts + '|' + m.author; // stable per message, for toggle-off
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const spoke = speakMessage(m.text, key);
+      btn.classList.toggle('speaking', spoke);
+    };
   });
 
   maybeMarkRead(isCard ? c : null);

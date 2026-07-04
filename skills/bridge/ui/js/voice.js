@@ -154,8 +154,20 @@ function playNext(gen) {
 }
 export function speak(text) {
   if (!voiceOn || !window.speechSynthesis) return;
-  const plain = stripEmoji(text.replace(/```[\s\S]*?```/g, ' code ').replace(/[`*#\[\]()]/g, ' ').replace(/https?:\S+/g, ' link '));
+  const plain = stripForSpeech(text);
   if (!plain) return;
+  manualSpeakingKey = null;                  // an auto-speak supersedes any manual toggle state
+  speakPlain(plain);
+}
+export function stopSpeaking() {
+  speakGen++; speakQueue = []; stopKeepalive();
+  try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
+}
+function stripForSpeech(text) {
+  return stripEmoji(text.replace(/```[\s\S]*?```/g, ' code ').replace(/[`*#\[\]()]/g, ' ').replace(/https?:\S+/g, ' link '));
+}
+// speak the queued chunks of `plain` as the newest message (shared by speak() and manual)
+function speakPlain(plain) {
   const gen = ++speakGen;                    // newest message wins
   speakQueue = chunkText(plain.slice(0, 1200));
   retriedChunk = false;
@@ -163,9 +175,24 @@ export function speak(text) {
   startKeepalive();
   setTimeout(() => playNext(gen), 60);       // let cancel() settle before speak() (Chrome quirk)
 }
-export function stopSpeaking() {
-  speakGen++; speakQueue = []; stopKeepalive();
-  try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
+// Manual, on-demand speak for a single message. Independent of the auto-speak
+// toggle: this call happens inside a real user gesture (the speak-button click),
+// so it runs the SAME proven unlock+speak routine the test button uses and works
+// even on iOS where SSE-driven auto-speak is gesture-locked. Returns true if it
+// spoke, false if there was nothing to say / no engine. Clicking again while this
+// message is speaking stops it (cheap toggle).
+let manualSpeakingKey = null;
+export function speakMessage(text, key) {
+  if (!window.speechSynthesis) return false;
+  if (key != null && manualSpeakingKey === key && (speechSynthesis.speaking || speechSynthesis.pending)) {
+    manualSpeakingKey = null; stopSpeaking(); return false; // toggle off
+  }
+  const plain = stripForSpeech(text);
+  if (!plain) return false;
+  primeVoice();                              // unlock in-gesture (no-op if already primed)
+  manualSpeakingKey = key != null ? key : null;
+  speakPlain(plain);
+  return true;
 }
 function setVoiceOn(on) {
   voiceOn = on;
