@@ -8,12 +8,22 @@ function mdInline(s) {
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
 }
 
+// GFM pipe table: split "| a | b |" into trimmed cells (leading/trailing pipes optional)
+function tableCells(line) {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').map((c) => c.trim());
+}
+const TABLE_SEP = /^\s*\|(?:\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?\s*$/; // |---|:--:| separator row
+
 export function md(src) {
   const lines = esc(src || '').split('\n');
   let out = '', inCode = false, inList = false, para = [];
   const flushPara = () => { if (para.length) { out += '<p>' + mdInline(para.join(' ')) + '</p>'; para = []; } };
   const closeList = () => { if (inList) { out += '</ul>'; inList = false; } };
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (/^```/.test(line)) {
       flushPara(); closeList();
       out += inCode ? '</code></pre>' : '<pre><code>';
@@ -24,6 +34,20 @@ export function md(src) {
     if (h) { flushPara(); closeList(); out += '<h' + h[1].length + '>' + mdInline(h[2]) + '</h' + h[1].length + '>'; continue; }
     const li = /^\s*[-*]\s+(.*)/.exec(line);
     if (li) { flushPara(); if (!inList) { out += '<ul>'; inList = true; } out += '<li>' + mdInline(li[1]) + '</li>'; continue; }
+    // pipe table: a |-line followed by a |---|---| separator row; anything else
+    // starting with | falls through to normal paragraph text
+    if (/^\s*\|/.test(line) && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1])) {
+      flushPara(); closeList();
+      out += '<div class="tbl"><table><thead><tr>' +
+        tableCells(line).map((c) => '<th>' + mdInline(c) + '</th>').join('') + '</tr></thead><tbody>';
+      i += 2;
+      for (; i < lines.length && /^\s*\|/.test(lines[i]); i++) {
+        out += '<tr>' + tableCells(lines[i]).map((c) => '<td>' + mdInline(c) + '</td>').join('') + '</tr>';
+      }
+      i--; // the for-loop's own i++ moves past the last row
+      out += '</tbody></table></div>';
+      continue;
+    }
     if (!line.trim()) { flushPara(); closeList(); continue; }
     para.push(line);
   }

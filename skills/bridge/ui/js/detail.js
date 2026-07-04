@@ -154,7 +154,15 @@ export function renderDetail() {
 
   document.getElementById('dt-emoji').textContent = cardEmoji(c);
   if (!editingTitle) titleEl.textContent = c.title || c.id; // don't clobber an in-progress rename
-  document.getElementById('dt-sub').textContent = c.id + ' · created ' + ago(c.created) + ' ago · updated ' + ago(c.updated) + ' ago';
+  // sub line: id + timestamps, plus a worker-id chip when a worker is attached.
+  // Same whitelist as the tile stripe (board.js) — only known states render, so
+  // no server value ever reaches the class name; the id itself is esc()'d.
+  const WORKER_STATES = { working: 1, 'needs-you': 1, idle: 1 };
+  const w = cardStatus(c).worker;
+  const worker = w && w.id && WORKER_STATES[w.state] ? w : null;
+  document.getElementById('dt-sub').innerHTML =
+    esc(c.id + ' · created ' + ago(c.created) + ' ago · updated ' + ago(c.updated) + ' ago') +
+    (worker ? '<span class="dt-worker dt-worker-' + worker.state + '" title="worker: ' + esc(worker.state) + '">' + esc(worker.id) + '</span>' : '');
 
   // attributes header (emoji shown up top already; owner gets its color).
   // prs and artifacts are structured lists with dedicated renderers below,

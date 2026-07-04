@@ -353,6 +353,15 @@ input, textarea, select { font: inherit; color: var(--text); }
   border-radius: 4px; padding: 1px 5px; margin: -2px -6px;
 }
 .dt-sub { color: var(--faint); font-size: 11px; font-family: var(--mono); margin-top: 1px; }
+/* worker-id chip in the sub line: dim mono like the id, dot colored by worker
+   state (same vars as the tile stripes: working=ok, needs-you=warn, idle=faint) */
+.dt-worker {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: 8px;
+  padding: 0 7px; border: 1px solid var(--line2); border-radius: 8px; color: var(--dim);
+}
+.dt-worker::before { content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--faint); }
+.dt-worker-working::before { background: var(--ok); }
+.dt-worker-needs-you::before { background: var(--warn); }
 #dt-talk { flex: none; color: var(--accent); border: 1px solid var(--accent2); border-radius: 7px; padding: 4px 10px; font-size: 12px; }
 #dt-talk:hover { background: var(--accent-soft); }
 #dt-menu-btn { flex: none; color: var(--dim); border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px; font-size: 13px; }
@@ -421,6 +430,10 @@ a.a-uri { color: var(--accent); }
 .md code { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 12px; font-family: var(--mono); }
 .md pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow-x: auto; margin: 8px 0; }
 .md pre code { background: none; border: none; padding: 0; }
+.md .tbl { overflow-x: auto; margin: 8px 0; } /* narrow detail body — scroll wide tables */
+.md table { border-collapse: collapse; font-size: 13px; line-height: 1.4; }
+.md th, .md td { border: 1px solid var(--line2); padding: 3px 8px; text-align: left; vertical-align: top; }
+.md th { background: var(--panel2); color: var(--dim); font-weight: 600; font-size: 12px; white-space: nowrap; }
 
 /* ---------- move menu ---------- */
 #move-menu {
