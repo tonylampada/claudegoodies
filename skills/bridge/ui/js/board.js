@@ -25,7 +25,17 @@ function tileHtml(c) {
     : (unread ? '<span class="t-unread" title="' + unread + ' unread"></span>' : '');
   const hasLink = Object.entries(at).some(([k, v]) => k !== 'owner' && /^https?:\/\//.test(String(v)));
   const labels = (c.labels || []).map((n) => labelChipHtml(n, filterSelected('label', n))).join('');
-  return '<div class="tile' + (c.id === S.openCardId ? ' open' : '') + '" draggable="true" data-id="' + esc(c.id) + '">' +
+  // worker-state stripe on the tile's LEFT edge — a PERSISTENT status signal,
+  // deliberately separate from the transient top-right corner. Driven by the
+  // card's `worker` attribute; only the known states get a stripe (whitelist, so
+  // an unknown/absent value renders no stripe and no attribute value ever reaches
+  // the class name — XSS-safe). working=green pulsing, needs-you=amber solid,
+  // idle=gray solid, anything else/absent=none.
+  const WORKER_STATES = { working: 'Working', 'needs-you': 'Needs you', idle: 'Idle' };
+  const worker = WORKER_STATES[at.worker] ? at.worker : '';
+  const workerCls = worker ? ' worker worker-' + worker : ''; // worker value is whitelisted above
+  const workerTitle = worker ? ' title="worker: ' + esc(WORKER_STATES[worker]) + '"' : '';
+  return '<div class="tile' + (c.id === S.openCardId ? ' open' : '') + workerCls + '" draggable="true" data-id="' + esc(c.id) + '"' + workerTitle + '>' +
     '<div class="t-row1"><span class="t-emoji">' + esc(cardEmoji(c)) + '</span>' +
     '<span class="t-title">' + esc(c.title || c.id) + '</span>' +
     cornerInd + '</div>' +
