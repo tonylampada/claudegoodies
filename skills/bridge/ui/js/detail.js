@@ -1,6 +1,6 @@
 // card detail: attributes header + markdown body + event timeline (chat lives in the chat panel)
-import { S, card, cardStatus, cardActivityTs, render, toggleFilter, filterSelected } from './state.js';
-import { esc, hhmm, ago, cardEmoji, ownerColor, KIND_EMOJI, cardPrs, prChipHtml, cardArtifacts } from './util.js';
+import { S, card, cardStatus, cardActivityTs, kindEmoji, render, toggleFilter, filterSelected } from './state.js';
+import { esc, hhmm, ago, cardEmoji, ownerColor, cardPrs, prChipHtml, cardArtifacts } from './util.js';
 import { md } from './md.js';
 import { api } from './api.js';
 import { labelChipHtml, labelColor, openLabelPicker, saveCardLabels } from './labels.js';
@@ -236,9 +236,10 @@ export function renderDetail() {
   // event timeline (newest first)
   const evEl = document.getElementById('dt-events');
   const events = (c.events || []).slice().reverse();
+  // kind emoji from the effective kinds map, for any level; unknown kind = no emoji
   evEl.innerHTML = events.map((e) =>
     '<div class="ev lvl' + e.level + '"><span class="dot"></span><div class="bd">' +
-    '<div class="tx">' + (e.level === 1 ? esc(KIND_EMOJI[e.kind] || '') + ' ' : '') + esc(e.text) + '</div>' +
+    '<div class="tx">' + (kindEmoji(e.kind) ? esc(kindEmoji(e.kind)) + ' ' : '') + esc(e.text) + '</div>' +
     '<div class="sub">' + esc(e.actor || '') + ' · ' + hhmm(e.ts) + ' · ' + ago(e.ts) + ' ago</div>' +
     '</div></div>').join('') || '<div class="ev"><div class="bd"><div class="sub">no events yet</div></div></div>';
 

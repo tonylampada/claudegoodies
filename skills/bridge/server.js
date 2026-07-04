@@ -11,8 +11,9 @@
 //                        events: [{seq, ts, level, kind, text, actor}],
 //                        thread: [{author, text, ts}] }],
 //             chat:    [{author, text, ts}],
-//             events:  [{seq, ts, level, kind, text, actor, card?, cardTitle?}], // board-level
+//             events:  [{seq, ts, level, kind?, text, actor, card?, cardTitle?}], // board-level
 //             labels:  [{name, color}],                     // user-owned registry
+//             kinds:   {<kind>: {emoji, level}},            // registered kinds map (overrides built-ins)
 //             reads:   { <user>: { notifSeq, notifSeqs[], threads: {<target>: ts} } } }
 //
 // Events are append-only and carry a global monotonic seq. The unified stream =
@@ -94,7 +95,7 @@ const WORKER_TTL_SECS = parseFloat(process.env.BRIDGE_WORKER_TTL_SECS) || 600;
 function defaultBoard() {
   return {
     title: opts.board, subtitle: '', updated: now(), seq: 0,
-    columns: [], cards: [], chat: [], events: [], labels: [], reads: {},
+    columns: [], cards: [], chat: [], events: [], labels: [], reads: {}, kinds: {},
   };
 }
 function normalizeBoard(doc) {
@@ -105,6 +106,7 @@ function normalizeBoard(doc) {
   if (!Array.isArray(b.events)) b.events = [];
   if (!Array.isArray(b.labels)) b.labels = [];
   if (!b.reads || typeof b.reads !== 'object') b.reads = {};
+  b.kinds = sanitizeKinds(b.kinds);
   for (const c of b.cards) {
     if (!Array.isArray(c.events)) c.events = [];
     if (!Array.isArray(c.thread)) c.thread = [];
@@ -142,16 +144,51 @@ function saveBoard() {
   fs.renameSync(tmp, BOARD_FILE);
 }
 
-// ---------- events ----------
-const KINDS = ['alert', 'question', 'handoff', 'success', 'info'];
+// ---------- events / kinds ----------
+// A kind is an open token. The bridge ships structural defaults only for the
+// kinds its OWN operations emit; a board may register its own kinds map
+// (PUT /api/kinds) whose entries are merged OVER these built-ins. A kind in
+// neither map is stored as-is (opaque token: no emoji, level falls back to 2).
+const BUILTIN_KINDS = {
+  created: { emoji: '🐣', level: 2 },
+  moved: { emoji: '🔁', level: 2 },
+  handoff: { emoji: '👀', level: 1 },
+  landed: { emoji: '🏁', level: 1 },
+  killed: { emoji: '🪦', level: 2 },
+  resurrected: { emoji: '🧟', level: 1 },
+  question: { emoji: '🙋', level: 1 },
+};
+function validKindEntry(v) {
+  return !!(v && typeof v === 'object' && typeof v.emoji === 'string' && v.emoji.trim() &&
+    (v.level === 1 || v.level === 2));
+}
+// Defensive normalization for the persisted registered map (hand edits included).
+function sanitizeKinds(doc) {
+  const out = {};
+  if (doc && typeof doc === 'object' && !Array.isArray(doc)) {
+    for (const [k, v] of Object.entries(doc)) {
+      if (k.trim() && validKindEntry(v)) out[k.trim().slice(0, 60)] = { emoji: v.emoji.trim(), level: v.level };
+    }
+  }
+  return out;
+}
+function effectiveKinds() { return Object.assign({}, BUILTIN_KINDS, board.kinds); }
+// Level resolution: explicit level wins; else the kind's level from the
+// effective map (registered over built-ins); else the caller's default; else 2.
 function mkEvent(body, defaults) {
-  const level = body.level === 2 ? 2 : body.level === 1 ? 1 : (defaults.level || 2);
-  let kind = KINDS.includes(body.kind) ? body.kind : (defaults.kind || 'info');
-  return {
-    seq: ++board.seq, ts: now(), level, kind,
+  const kindRaw = body.kind == null ? '' : String(body.kind).trim();
+  const kind = kindRaw ? kindRaw.slice(0, 60) : (defaults.kind || null);
+  const known = kind ? effectiveKinds()[kind] : null;
+  const level = body.level === 2 ? 2 : body.level === 1 ? 1
+    : known ? known.level
+    : (defaults.level === 1 || defaults.level === 2 ? defaults.level : 2);
+  const ev = {
+    seq: ++board.seq, ts: now(), level,
     text: String(body.text || '').slice(0, 2000),
     actor: String(body.actor || defaults.actor || 'agent').slice(0, 60),
   };
+  if (kind) ev.kind = kind;
+  return ev;
 }
 
 // ---------- label registry (user-owned; persisted in board json) ----------
@@ -248,8 +285,10 @@ function cardStatus(card, user) {
 function publicCard(card, user) {
   return Object.assign({}, card, { status: cardStatus(card, user) });
 }
+// The served board carries the EFFECTIVE kinds map (built-ins merged under the
+// registered entries); the stored board keeps only the registered map.
 function publicBoard(user) {
-  return Object.assign({}, board, { cards: board.cards.map((c) => publicCard(c, user)) });
+  return Object.assign({}, board, { kinds: effectiveKinds(), cards: board.cards.map((c) => publicCard(c, user)) });
 }
 
 // status.set — the ONLY writer of card.status.worker.
@@ -392,7 +431,7 @@ function createCard(body, actorDefault) {
     created: now(), updated: now(), threadStart: null,
     events: [], thread: [],
   };
-  card.events.push(mkEvent({ text: 'created in ' + columnTitle(column), actor, level: 2 }, { kind: 'info' }));
+  card.events.push(mkEvent({ text: 'created in ' + columnTitle(column), actor }, { kind: 'created' }));
   board.cards.push(card);
   registerCardLabels();
   if (actor !== 'agent') pushFeedback({ kind: 'card-created', target: 'card:' + id, text: title, column });
@@ -407,11 +446,14 @@ function moveCard(card, body, actorDefault) {
   const from = card.column;
   card.column = column;
   card.updated = now();
-  // A move is a deliberate act: it always lands on the timeline. Default level:
-  // an agent move notifies the human (level 1 handoff); a human's own move is level 2.
+  // A move is a deliberate act: it always lands on the timeline. Default kind:
+  // an agent move is a handoff (level 1 from the kinds map — notifies the human);
+  // any other actor's move is `moved` (level 2). `kind` in the body overrides
+  // (e.g. a non-handoff agent move passes kind "moved"); levels come from the
+  // effective kinds map unless an explicit level is given.
   const ev = mkEvent(
     { level: body.level, kind: body.kind, actor, text: columnTitle(from) + ' → ' + columnTitle(column) },
-    { level: actor === 'agent' ? 1 : 2, kind: 'handoff' });
+    { kind: actor === 'agent' ? 'handoff' : 'moved' });
   card.events.push(ev);
   if (actor !== 'agent') pushFeedback({ kind: 'card-moved', target: 'card:' + card.id, text: card.title, from, column });
   return { ok: true, event: ev };
@@ -451,10 +493,13 @@ function archiveCard(card, body, actorDefault) {
   if (note) rec.note = note;
   fs.appendFileSync(ARCHIVE_FILE, JSON.stringify(rec) + '\n');
   board.cards = board.cards.filter((c) => c.id !== card.id);
-  // The kill lands on the board-level stream (the card is gone) with a card reference.
+  // The kill lands on the board-level stream (the card is gone) with a card
+  // reference. Typed by reason: merged = landed (level 1 — worth a bell),
+  // killed = killed (level 2 — the human's own act, no bell). Levels come from
+  // the effective kinds map.
   const ev = mkEvent(
     { level: body && body.level, kind: body && body.kind, actor, text: reason + ': ' + (note || card.title) },
-    { level: 1, kind: 'success' });
+    { kind: reason === 'merged' ? 'landed' : 'killed' });
   ev.card = card.id; ev.cardTitle = card.title; ev.archived = true;
   board.events.push(ev);
   return { ok: true, event: ev };
@@ -482,9 +527,9 @@ function restoreCard(id, body) {
   card.status = { worker: null }; // the lease starts absent until the next status.set
   for (const e of card.events) if (e.seq > board.seq) board.seq = e.seq; // defensive: no seq reuse
   const ev = mkEvent({
-    level: 1, kind: body && body.kind, actor: body && body.actor,
+    level: body && body.level, kind: body && body.kind, actor: body && body.actor,
     text: String((body && body.text) || '').trim() || 'resurrected',
-  }, { kind: 'alert' });
+  }, { kind: 'resurrected' });
   card.events.push(ev);
   card.updated = now();
   board.cards.push(card);
@@ -581,7 +626,7 @@ const server = http.createServer(async (req, res) => {
       if (sub === 'events' && req.method === 'POST') {
         const body = JSON.parse(await readBody(req) || '{}');
         if (!String(body.text || '').trim()) return sendJson(res, 400, { error: 'text required' });
-        const ev = mkEvent(body, { level: 2, kind: 'info' });
+        const ev = mkEvent(body, { level: 2 });
         card.events.push(ev);
         card.updated = now();
         saveBoard(); broadcast();
@@ -600,7 +645,7 @@ const server = http.createServer(async (req, res) => {
     if (route === 'POST /api/events') {
       const body = JSON.parse(await readBody(req) || '{}');
       if (!String(body.text || '').trim()) return sendJson(res, 400, { error: 'text required' });
-      const ev = mkEvent(body, { level: 1, kind: 'info' });
+      const ev = mkEvent(body, { level: 1 });
       board.events.push(ev);
       saveBoard(); broadcast();
       return sendJson(res, 200, { ok: true, event: ev });
@@ -619,6 +664,29 @@ const server = http.createServer(async (req, res) => {
       board.columns = next;
       saveBoard(); broadcast();
       return sendJson(res, 200, { ok: true, columns: board.columns.length });
+    }
+
+    // ----- kinds (registered map; idempotent replace, mirrors the columns frame) -----
+    if (route === 'GET /api/kinds') {
+      return sendJson(res, 200, { kinds: effectiveKinds(), registered: board.kinds });
+    }
+    if (route === 'PUT /api/kinds') {
+      const doc = JSON.parse(await readBody(req) || 'null');
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+        return sendJson(res, 400, { error: 'kinds must be {"<kind>": {"emoji": "...", "level": 1|2}}' });
+      }
+      for (const [k, v] of Object.entries(doc)) {
+        if (!k.trim() || !validKindEntry(v)) {
+          return sendJson(res, 400, { error: 'bad kind "' + k + '": each entry needs {emoji: non-empty string, level: 1|2}' });
+        }
+      }
+      const next = sanitizeKinds(doc);
+      if (JSON.stringify(next) === JSON.stringify(board.kinds)) {
+        return sendJson(res, 200, { ok: true, kinds: Object.keys(board.kinds).length, unchanged: true });
+      }
+      board.kinds = next;
+      saveBoard(); broadcast();
+      return sendJson(res, 200, { ok: true, kinds: Object.keys(board.kinds).length });
     }
 
     // ----- board meta (title/subtitle) -----
@@ -646,7 +714,7 @@ const server = http.createServer(async (req, res) => {
         if (card) { card.updated = now(); if (!card.threadStart) card.threadStart = msg.ts; }
       } else {
         // A free-form agent message in the main chat is a level-1 notification.
-        const ev = mkEvent({ text: text.slice(0, 200), actor: msg.author, level: body.level, kind: body.kind }, { level: 1, kind: 'info' });
+        const ev = mkEvent({ text: text.slice(0, 200), actor: msg.author, level: body.level, kind: body.kind }, { level: 1 });
         board.events.push(ev);
       }
       saveBoard(); broadcast(); // an agent reply clears derived owed via broadcast

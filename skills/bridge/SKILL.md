@@ -39,8 +39,14 @@ any agent with shell access can drive it.
     `{uri, label}` — resources hung on the card).
   - `body`: markdown, the card's CURRENT state — rewrite it as work evolves.
   - `events`: append-only timestamped timeline. Level 2 = timeline only; level 1 = also a
-    notification. Kinds and their signal emojis: `alert` 🚨, `question` ❓, `handoff` 👀,
-    `success` ✅, `info` 💡.
+    notification. `kind` is an open token: a board can register its own kinds map with
+    `bridge-axi kinds <file.json|->` (`{"<kind>": {"emoji": "…", "level": 1|2}}`,
+    idempotent replace like `columns`; bare `bridge-axi kinds` prints the effective map).
+    Built-ins ship for the bridge's own operations, overridable by the registered map:
+    `created` 🐣 2, `moved` 🔁 2, `handoff` 👀 1, `landed` 🏁 1, `killed` 🪦 2,
+    `resurrected` 🧟 1, `question` 🙋 1. On append, an explicit `--level` wins, else the
+    kind's level from the effective map, else 2; a kind in neither map is stored as-is
+    (opaque token, no emoji).
   - `labels`: USER-owned (edited in the UI, managed registry with colors). Agents never
     set or rewrite them.
 - **Unified event stream**: board-level events + every card's events, one global sequence.
@@ -48,9 +54,11 @@ any agent with shell access can drive it.
   the bell dropdown. Per-user read state persists server-side in the board file.
 - **Kill = archive**: `bridge-axi archive <id>` snapshots the card to the append-only
   archive file and removes it from the board. No destructive delete; `bridge-axi archived`
-  lists recent kills. An archived card can be restored: `bridge-axi restore <id>` brings
-  the most recent snapshot back in full (body, events, thread, frozen column) with a loud
-  level-1 event; the archive record stays, so **the board is truth for liveness** — an
+  lists recent kills. The board event is typed by reason: `merged` → `landed` 🏁 (level 1),
+  `killed` → `killed` 🪦 (level 2 — the human's own act, no bell). An archived card can be
+  restored: `bridge-axi restore <id>` brings the most recent snapshot back in full (body,
+  events, thread, frozen column) with a loud level-1 `resurrected` 🧟 event; the archive
+  record stays, so **the board is truth for liveness** — an
   archive record never by itself means the card is off the board. A card restored into a
   column that has since been removed from the frame won't render until moved.
 
@@ -61,8 +69,9 @@ any agent with shell access can drive it.
    pass `--host 127.0.0.1` to restrict.
 2. Feed reality: `create` new cards, `patch` bodies/attributes as state evolves, `event`
    for timeline signals (level 1 only for things the human must see), `move` for real
-   state transitions, `archive` when work is dead or landed, `restore` to resurrect an
-   archived card, `say` to talk.
+   state transitions (an agent move defaults to a `handoff` that notifies; pass
+   `--kind moved` for a quiet reshuffle), `archive` when work is dead or landed,
+   `restore` to resurrect an archived card, `say` to talk.
 3. Keep `bridge-axi poll` running as a tracked background task. It BLOCKS until human
    input, prints JSON lines, and exits; handle each line, reply with
    `bridge-axi say <target> --text-file <f>`, then `bridge-axi ack <seq>` (highest seq

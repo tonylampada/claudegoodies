@@ -126,6 +126,21 @@ async function cmdColumns() {
   console.log('columns=' + r.columns + (r.unchanged ? ' (unchanged)' : ''));
 }
 
+async function cmdKinds() {
+  if (!positional.length) { // print the effective map (built-ins merged under registered)
+    const r = await request('GET', '/api/kinds');
+    if (opts.json) return console.log(JSON.stringify(r, null, 2));
+    const reg = r.registered || {};
+    for (const [k, v] of Object.entries(r.kinds)) {
+      console.log(k + '\t' + v.emoji + '\tL' + v.level + '\t' + (reg[k] ? 'registered' : 'built-in'));
+    }
+    return;
+  }
+  const kinds = JSON.parse(readInput(positional[0]));
+  const r = await request('PUT', '/api/kinds', kinds);
+  console.log('kinds=' + r.kinds + (r.unchanged ? ' (unchanged)' : ''));
+}
+
 async function cmdBoard() {
   const b = await request('GET', '/api/board');
   if (opts.json) return console.log(JSON.stringify(b, null, 2));
@@ -217,7 +232,7 @@ async function cmdPatch() {
 
 async function cmdEvent() {
   const id = positional[0];
-  if (!id) die('usage: bridge-axi event <card-id> [--level 1|2] [--kind alert|question|handoff|success|info] [--text-file f|-]\n  (text from --text-file or stdin; level 2 = timeline only, level 1 = also notifies)');
+  if (!id) die('usage: bridge-axi event <card-id> [--level 1|2] [--kind K] [--text-file f|-]\n  (text from --text-file or stdin; kind is an open token — a kind in the board\'s\n  kinds map sets the default level and emoji; explicit --level wins, else level 2)');
   const text = readInput(opts.textFile).trim();
   const body = { text, actor: opts.actor || 'agent' };
   if (opts.level) body.level = opts.level;
@@ -236,7 +251,7 @@ async function cmdNotify() {
 
 async function cmdArchive() {
   const id = positional[0];
-  if (!id) die('usage: bridge-axi archive <card-id> [--reason merged|killed] [--note "..."] [--kind success|info] [--level 1|2]');
+  if (!id) die('usage: bridge-axi archive <card-id> [--reason merged|killed] [--note "..."] [--kind K] [--level 1|2]');
   const body = { actor: opts.actor || 'agent' };
   if (opts.reason) body.reason = opts.reason;
   if (opts.note) body.note = opts.note;
@@ -361,7 +376,7 @@ async function cmdConfig() {
 }
 
 const commands = {
-  open: cmdOpen, columns: cmdColumns, board: cmdBoard, show: cmdShow, thread: cmdThread,
+  open: cmdOpen, columns: cmdColumns, kinds: cmdKinds, board: cmdBoard, show: cmdShow, thread: cmdThread,
   create: cmdCreate, move: cmdMove, patch: cmdPatch, event: cmdEvent, notify: cmdNotify,
   archive: cmdArchive, restore: cmdRestore, archived: cmdArchived, say: cmdSay, poll: cmdPoll, ack: cmdAck,
   status: cmdStatus, config: cmdConfig, stop: cmdStop,
@@ -384,13 +399,17 @@ if (!commands[cmd]) {
     '  thread <chat|card:ID> [--json]         print a conversation thread\n' +
     '  archived [n] [--json]                  last n archived cards (default 20)\n' +
     '  columns                                print the column frame (id<TAB>title)\n' +
+    '  kinds [--json]                         print the effective kinds map (built-ins + registered)\n' +
     '\nwrite:\n' +
     '  create --title T [--column c] [--id id] [--body-file f|-] [--attr k=v]... [--label l]...\n' +
     '                                         new card (default column: first)\n' +
-    '  move <card-id> <column>                move card; records an event (agent move notifies)\n' +
+    '  move <card-id> <column> [--kind K]     move card; records an event. Agent move defaults to\n' +
+    '                                         kind handoff (notifies), other actors to kind moved;\n' +
+    '                                         --kind overrides (e.g. --kind moved for a quiet agent move)\n' +
     '  patch <card-id> [--title T] [--body-file f|-] [--attr k=v]...   update card (k= deletes attr)\n' +
     '  event <card-id> [--level 1|2] [--kind K] [--text-file f|-]     append timeline event\n' +
-    '                                         kinds: alert question handoff success info\n' +
+    '                                         kind is an open token; a kind in the kinds map sets the\n' +
+    '                                         default level and emoji. Explicit --level wins, else 2.\n' +
     '                                         level 1 notifies the human; level 2 = timeline only\n' +
     '  notify [--kind K] [--text-file f|-]    board-level notification (no card)\n' +
     '  archive <card-id> [--reason merged|killed] [--note "..."]\n' +
@@ -403,6 +422,10 @@ if (!commands[cmd]) {
     '                                         (--note or --text-file = its text, default "resurrected")\n' +
     '  say <chat|card:ID> [--text-file f|-]   post a chat message (main chat says also notify)\n' +
     '  columns <file.json|->                  replace the column frame [{id,title}] (idempotent)\n' +
+    '  kinds <file.json|->                    replace the board\'s registered kinds map (idempotent):\n' +
+    '                                         {"<kind>": {"emoji": "…", "level": 1|2}}. Registered entries\n' +
+    '                                         override the built-ins: created 🐣2 moved 🔁2 handoff 👀1\n' +
+    '                                         landed 🏁1 killed 🪦2 resurrected 🧟1 question 🙋1\n' +
     '\nloop (at-least-once):\n' +
     '  poll                                   BLOCK until unacked user feedback, print JSON lines, exit\n' +
     '    lines: {"seq","ts","kind":"message|card-created|card-moved","target","text",...}\n' +

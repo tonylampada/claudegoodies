@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { startServerWithColumns } = require('./helper');
 
-test('card events: default level 2, explicit level 1, kind fallback, monotonic seq', async () => {
+test('card events: default level 2, explicit level 1, open kind tokens, monotonic seq', async () => {
   const s = await startServerWithColumns();
   try {
     await s.api('POST', '/api/cards', { title: 'Evented' });
@@ -12,7 +12,7 @@ test('card events: default level 2, explicit level 1, kind fallback, monotonic s
     let r = await s.api('POST', '/api/cards/evented/events', { text: 'quiet note' });
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.event.level, 2); // card events default to timeline-only
-    assert.strictEqual(r.body.event.kind, 'info');
+    assert.strictEqual(r.body.event.kind, undefined); // no kind given: none stored
     const seq1 = r.body.event.seq;
 
     r = await s.api('POST', '/api/cards/evented/events', { text: 'ring the bell', level: 1, kind: 'alert' });
@@ -20,9 +20,10 @@ test('card events: default level 2, explicit level 1, kind fallback, monotonic s
     assert.strictEqual(r.body.event.kind, 'alert');
     assert.strictEqual(r.body.event.seq, seq1 + 1); // global monotonic seq
 
-    // unknown kind falls back to the default
+    // a kind is an open token: unknown kinds are stored as-is (opaque)
     r = await s.api('POST', '/api/cards/evented/events', { text: 'weird', kind: 'bogus' });
-    assert.strictEqual(r.body.event.kind, 'info');
+    assert.strictEqual(r.body.event.kind, 'bogus');
+    assert.strictEqual(r.body.event.level, 2); // not in the kinds map: level falls back
 
     // text is required
     r = await s.api('POST', '/api/cards/evented/events', { text: '  ' });

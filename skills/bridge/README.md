@@ -36,13 +36,23 @@ e.g. TTS voice filter).
   "chat":   [{"author": "agent|user", "text": "…", "ts": "…"}],
   "events": [ /* board-level events (no card, or archived-card records) */ ],
   "labels": [{"name": "urgent", "color": "#e06c75"}],  // USER-owned registry
+  "kinds":  {"deploy": {"emoji": "🚀", "level": 1}},    // registered kinds map (overrides built-ins)
   "reads":  {"user": {"notifSeq": 0, "notifSeqs": [], "threads": {"chat": "…"}}}
 }
 ```
 
 Events are append-only with a global monotonic `seq`. The unified stream = board events +
-all card events ordered by seq; notifications are its level-1 slice. Event kinds:
-`alert` 🚨 `question` ❓ `handoff` 👀 `success` ✅ `info` 💡.
+all card events ordered by seq; notifications are its level-1 slice.
+
+A `kind` is an open token. A board may register its own kinds map (`PUT /api/kinds`,
+`bridge-axi kinds`): `{"<kind>": {"emoji": "…", "level": 1|2}}`. The bridge ships
+built-in defaults only for the kinds its own operations emit, merged UNDER the
+registered map (registered entries override): `created` 🐣 2, `moved` 🔁 2,
+`handoff` 👀 1, `landed` 🏁 1, `killed` 🪦 2, `resurrected` 🧟 1, `question` 🙋 1.
+Level resolution on append: an explicit `level` wins; else the kind's level from the
+effective map; else the route default (2 for card events, 1 for board-level events).
+A kind in neither map is stored as-is — an opaque token, no emoji. The served board
+doc carries the EFFECTIVE map in `kinds`; the file persists only the registered map.
 
 ## API
 
@@ -57,6 +67,7 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 | `GET /api/cards/<id>` | one card, with derived `status` |
 | `GET /api/status` | `{board, port, cards, seq, feedback_seq, feedback_ack, pid}` |
 | `GET /api/archive?limit=N` | last N archived records, newest first |
+| `GET /api/kinds` | `{kinds, registered}` — the effective kinds map (built-ins merged under registered) and the registered map alone |
 | `GET /api/notifications?user=U` | `{items, unread}` — level-1 events (read flags from notification read state) UNION agent card-thread replies (kind `reply`, no seq; read flag from the thread read marker), newest first. Main chat is excluded: an agent main-chat message already rides its level-1 event |
 | `GET /api/config` | user config (voice filter) |
 | `GET /api/events` | SSE: `board` (full doc on every change) |
@@ -69,10 +80,10 @@ All bodies are JSON. Errors: `{"error": "…"}` with 4xx.
 |---|---|---|
 | `POST /api/cards` | `{title, id?, column?, labels?, attributes?, body?, actor?}` | create; default column = first; id slugged from title; records a "created" event. `actor` ≠ `agent` also pushes a `card-created` feedback so the agent wakes. 409 on existing id. |
 | `PATCH /api/cards/<id>` | `{title?, body?, labels?, attributes?}` | attributes merge per key; value `null` deletes a key. No event is emitted — pair with an explicit event when the change is signal-worthy. |
-| `POST /api/cards/<id>/move` | `{column, actor?, level?, kind?}` | records a timeline event with the actor. Default level: agent move = 1 (notifies the human), user move = 2. User moves push `card-moved` feedback. |
-| `POST /api/cards/<id>/events` | `{text, level?, kind?, actor?}` | append event (default level 2 / kind info) |
-| `POST /api/cards/<id>/archive` | `{actor?, reason?, note?, level?, kind?}` | kill = archive: snapshot to the archive file, remove from board, level-1 ✅ board event by default. `reason` is the validated enum `merged \| killed` (default `killed`; anything else is a 400); optional free-text `note` is preserved on the record |
-| `POST /api/cards/<id>/restore` | `{actor?, text?, kind?}` | resurrection: bring the most recent archived snapshot for the id back onto the board — frozen body/events/thread/attributes/column restored in full, worker lease starting absent. Appends a loud level-1 event (`text` default `resurrected`). The archive log is untouched (append-only; the original record remains). 404 if never archived, 409 if already on the board. |
+| `POST /api/cards/<id>/move` | `{column, actor?, level?, kind?}` | records a timeline event with the actor. Default kind: agent move = `handoff` (level 1 — notifies the human), any other actor = `moved` (level 2); `kind` overrides (e.g. `moved` for a quiet agent move), levels from the effective kinds map. User moves push `card-moved` feedback. |
+| `POST /api/cards/<id>/events` | `{text, level?, kind?, actor?}` | append event (kind optional, open token; level: explicit > kind's map level > 2) |
+| `POST /api/cards/<id>/archive` | `{actor?, reason?, note?, level?, kind?}` | kill = archive: snapshot to the archive file, remove from board, board event typed by reason — `merged` → `landed` 🏁 (level 1), `killed` → `killed` 🪦 (level 2, no bell). `reason` is the validated enum `merged \| killed` (default `killed`; anything else is a 400); optional free-text `note` is preserved on the record |
+| `POST /api/cards/<id>/restore` | `{actor?, text?, kind?, level?}` | resurrection: bring the most recent archived snapshot for the id back onto the board — frozen body/events/thread/attributes/column restored in full, worker lease starting absent. Appends a loud `resurrected` 🧟 level-1 event (`text` default `resurrected`). The archive log is untouched (append-only; the original record remains). 404 if never archived, 409 if already on the board. |
 | `POST /api/cards/<id>/status` | `{worker: {id, state} \| null, ttl?}` | `status.set` — link a worker to the card as a lease. `state` ∈ `absent\|idle\|working\|needs-you`; `ttl` in seconds (default 600; `BRIDGE_WORKER_TTL_SECS`). `null` worker or state `absent` unlinks. |
 
 ### Status
@@ -98,6 +109,7 @@ lease id or the card id).
 | Route | Body | Notes |
 |---|---|---|
 | `PUT /api/columns` | `[{id, title}]` | replace the column frame; identical frame = no-op (idempotent) |
+| `PUT /api/kinds` | `{"<kind>": {"emoji": "…", "level": 1\|2}}` | replace the registered kinds map; identical map = no-op (idempotent). Registered entries override the built-ins; `{}` clears back to built-ins only |
 | `PATCH /api/board` | `{title?, subtitle?}` | board meta |
 | `POST /api/events` | `{text, level?, kind?, actor?}` | board-level event (free-form notification, default level 1) |
 | `POST /api/labels` | `{create:{name,color?}}` \| `{rename:{from,to}}` \| `{recolor:{name,color}}` \| `{delete:{name}}` | label registry; rename/delete cascade to cards |
@@ -106,7 +118,7 @@ lease id or the card id).
 
 | Route | Body | Notes |
 |---|---|---|
-| `POST /api/message` | `{target, text\|text_md, author?}` | agent → human. Target `chat` or `card:<id>`. A main-chat agent message also emits a level-1 💡 event (free-form notification). An agent reply clears the target's derived `owed`. |
+| `POST /api/message` | `{target, text\|text_md, author?}` | agent → human. Target `chat` or `card:<id>`. A main-chat agent message also emits a level-1 event (free-form notification). An agent reply clears the target's derived `owed`. |
 | `POST /api/feedback` | `{target, text}` | human → agent: appends to the thread and queues a durable `message` feedback. The latest-message-is-the-user's rule flips the target's derived `owed` (the UI's "agent owes you a reply" balloon; owed unanswered past ~180s renders as "may be stuck", derived client-side). |
 | `POST /api/notifications/read` | `{user?, seqs?[], all?}` | persist notification read state. `all` also advances the thread read marker of every card with unseen agent replies (clearing is reading — reply items have no seq to mark) |
 | `POST /api/read` | `{user?, target, ts?}` | persist a thread read marker (unread badges) |

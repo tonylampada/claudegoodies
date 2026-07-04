@@ -86,6 +86,16 @@ export function owedTargets() {
   return out;
 }
 
+// ---------- kinds ----------
+// The board doc carries the EFFECTIVE kinds map (server-merged: built-ins under
+// registered entries): {<kind>: {emoji, level}}. Any event whose kind is in the
+// map renders that emoji; absent/unknown kinds render with no emoji.
+export function kinds() { return (S.doc && S.doc.kinds) || {}; }
+export function kindEmoji(kind) {
+  const k = kind && kinds()[kind];
+  return k && k.emoji ? String(k.emoji) : '';
+}
+
 // the unified event stream: board-level events + every card's events, by seq
 export function allEvents() {
   const out = [];

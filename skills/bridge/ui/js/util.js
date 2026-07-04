@@ -23,9 +23,6 @@ export function dayLabel(iso) {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-// well-known signal emojis per event kind
-export const KIND_EMOJI = { alert: '🚨', question: '❓', handoff: '👀', success: '✅', info: '💡' };
-
 // default emojis for the card `type` attribute; attributes.emoji overrides,
 // unknown types fall back to the neutral marker below
 const TYPE_EMOJI = {

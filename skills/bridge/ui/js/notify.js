@@ -1,8 +1,8 @@
 // notification bell: level-1 filter over the unified event stream, with
 // expandable "· N events ·" dividers revealing the suppressed level-2 events.
-import { S, allEvents, notifItems, notifUnreadCount, card, render } from './state.js';
+import { S, allEvents, notifItems, notifUnreadCount, card, kindEmoji, render } from './state.js';
 import { api } from './api.js';
-import { esc, ago, KIND_EMOJI } from './util.js';
+import { ago } from './util.js';
 
 const bellBtn = document.getElementById('bell');
 const bellN = document.getElementById('bell-n');
@@ -31,7 +31,9 @@ function itemNode(e, lvl2) {
   row.className = 'np-item lvl' + e.level + (lvl2 ? '' : e.read ? ' read' : ' unread');
   const em = document.createElement('span');
   em.className = 'em';
-  em.textContent = e.level === 1 ? (KIND_EMOJI[e.kind] || '💡') : '·';
+  // emoji from the effective kinds map for ANY mapped kind; unmapped kinds keep
+  // the legacy fallback (💡 for level-1 items incl. replies, · for level-2)
+  em.textContent = kindEmoji(e.kind) || (e.level === 1 ? '💡' : '·');
   const bd = document.createElement('div');
   bd.className = 'bd';
   const tx = document.createElement('div');

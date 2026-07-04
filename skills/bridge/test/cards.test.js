@@ -19,6 +19,7 @@ test('card create: defaults, slug ids, created event', async () => {
     assert.strictEqual(card.body, '');
     assert.strictEqual(card.events.length, 1); // birth event
     assert.strictEqual(card.events[0].level, 2);
+    assert.strictEqual(card.events[0].kind, 'created');
     assert.strictEqual(card.events[0].actor, 'agent');
     assert.match(card.events[0].text, /^created in To do$/);
 
@@ -92,9 +93,10 @@ test('card move: deliberate act, event levels by actor, unchanged when same colu
     r = await s.api('POST', '/api/cards/mover/move', { column: 'doing' });
     assert.strictEqual(r.body.unchanged, true);
 
-    // user move -> level-2 event and a card-moved feedback line
+    // user move -> level-2 `moved` event and a card-moved feedback line
     r = await s.api('POST', '/api/cards/mover/move', { column: 'review', actor: 'user' });
     assert.strictEqual(r.body.event.level, 2);
+    assert.strictEqual(r.body.event.kind, 'moved');
     const poll = await s.api('GET', '/api/poll?nowait=1');
     const moved = poll.body.events.filter((e) => e.kind === 'card-moved');
     assert.strictEqual(moved.length, 1);
@@ -116,8 +118,8 @@ test('card archive: appended to archive jsonl, removed from board, board-level e
     await s.api('POST', '/api/cards', { title: 'Shipped thing' });
     const r = await s.api('POST', '/api/cards/shipped-thing/archive', { reason: 'merged', actor: 'agent' });
     assert.strictEqual(r.status, 200);
-    assert.strictEqual(r.body.event.level, 1); // archive defaults to a level-1 success event
-    assert.strictEqual(r.body.event.kind, 'success');
+    assert.strictEqual(r.body.event.level, 1); // reason merged -> landed, level 1 from the kinds map
+    assert.strictEqual(r.body.event.kind, 'landed');
     assert.strictEqual(r.body.event.card, 'shipped-thing');
     assert.strictEqual(r.body.event.archived, true);
 
