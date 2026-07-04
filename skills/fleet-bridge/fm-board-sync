@@ -33,6 +33,9 @@
 //      from the task meta's recorded PR (open) and backlog Done verbs (merged).
 //      Cards still carrying the old `pr`/`pr_state` attributes are migrated:
 //      folded into `prs`, old keys deleted (PATCH value null deletes).
+//      Cards still typed `discussion` are migrated to `plan` (the discussion
+//      type no longer exists — plan covers it); the sweep runs every run, so
+//      cards resurrected from old archive snapshots are covered too.
 //   5. Asserts the worker lease via status.set — EVIDENCE-BASED, never sampled
 //      from screen panes. Per linked task (aliases + task-id match):
 //        - last state/<id>.status line starts needs-decision:/blocked: -> needs-you
@@ -589,6 +592,17 @@ async function main() {
     if (prsDecided.has(c.id)) continue;
     if (!plannedOwners.has((c.attributes || {}).owner)) continue;
     planPrs(c.id, c, [], [], plan);
+  }
+
+  // Migration sweep: the `discussion` type no longer exists (plan covers it —
+  // a conversation IS early planning). Owned cards still typed discussion,
+  // including ones resurrected from old archive snapshots on a later run, are
+  // patched to plan.
+  for (const c of board.cards || []) {
+    if (!plannedOwners.has((c.attributes || {}).owner)) continue;
+    if ((c.attributes || {}).type === 'discussion') {
+      plan.attrs.push({ card: c.id, attributes: { type: 'plan' } });
+    }
   }
 
   if (!opts.apply) {

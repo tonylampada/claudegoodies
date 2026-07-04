@@ -228,6 +228,48 @@ test('migration: old pr/pr_state attributes fold into prs and are deleted', asyn
   }
 });
 
+test('migration: discussion-typed cards are patched to plan; other types untouched', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    await s.api('PUT', '/api/columns', FRAME);
+    // a parked captain-era discussion card (no live task) — the sweep path
+    await s.api('POST', '/api/cards', {
+      id: 'old-talk-q7', title: 'Old talk', column: 'ideas',
+      attributes: { type: 'discussion', owner: 'firstmate' },
+    });
+    // a non-discussion card stays untouched
+    await s.api('POST', '/api/cards', {
+      id: 'probe-cache-c3', title: 'Probe cache', column: 'working',
+      attributes: { type: 'investigation', owner: 'firstmate' },
+    });
+    // an unowned card is out of scope for the sweep
+    await s.api('POST', '/api/cards', {
+      id: 'foreign-b2', title: 'Foreign', column: 'ideas',
+      attributes: { type: 'discussion', owner: 'someone-else' },
+    });
+    fx.writeBacklog(home, {});
+
+    await fx.syncApply(s, home);
+
+    const talk = await fx.getCard(s, 'old-talk-q7');
+    assert.strictEqual(talk.attributes.type, 'plan');
+    assert.strictEqual(talk.column, 'ideas'); // untouched otherwise
+    const probe = await fx.getCard(s, 'probe-cache-c3');
+    assert.strictEqual(probe.attributes.type, 'investigation');
+    const foreign = await fx.getCard(s, 'foreign-b2');
+    assert.strictEqual(foreign.attributes.type, 'discussion');
+
+    // idempotent: a second run plans no further type patch
+    const plan = await fx.syncPlan(s, home);
+    assert.ok(!plan.attrs.some((a) => a.attributes && a.attributes.type === 'plan'),
+      'no repeat type patch after migration');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
 test('artifacts: worker brief attached at birth as {uri, label}', async () => {
   const s = await startServer();
   const home = fx.makeHome();
