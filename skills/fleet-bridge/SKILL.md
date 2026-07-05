@@ -5,193 +5,120 @@ description: How firstmate drives the bridge kanban board with its fleet state. 
 
 # fleet-bridge
 
-**What this is.** The captain runs a kanban board in his browser — the **bridge** — as
-his main surface for delegation-heavy work: one card per piece of fleet work, columns for
-where it stands, per-card chat threads, a timeline of typed events, a notification bell.
-He glances at it to know what every worker is doing and types into it to steer you. The
-board itself is a separate, generic application shipped as the `bridge` skill (zero-dep
-node server + web UI + `bridge-axi` CLI); it is agent-agnostic and knows NOTHING about
-firstmate. THIS skill is the firstmate side of that pairing: how you keep the board true
-and answer what comes back from it.
+**The story.** The captain runs a kanban board in his browser — the **bridge** — as his
+main surface for delegation-heavy work: one card per piece of fleet work, per-card chat
+threads, typed timeline events, a notification bell. He glances to see, types to steer.
+The board is a separate generic app shipped as the `bridge` skill (zero-dep node server +
+web UI + `bridge-axi` CLI) and knows NOTHING about firstmate; THIS skill is the firstmate
+side. Two loops meet at you: Loop A = the captain talking to you through the board,
+Loop B = the feeder narrating fleet evidence onto cards. Everything mechanical is
+automated — you are the only gear that cannot be. Model:
+[docs/api/overview.md](docs/api/overview.md); the board itself: the bridge skill's own
+`docs/api/overview.md`.
 
-The user installs the two skills separately, by name (`bridge` and `fleet-bridge`).
-Reference the bridge only as the installed `bridge` skill — never by a repository path.
-`bridge-axi` and the bridge's own docs live in the installed bridge skill's directory.
+## Setup
 
-The system is two loops meeting at you (see
-[docs/api/overview.md](docs/api/overview.md) for the model, and the bridge skill's own
-`docs/api/overview.md` for the board itself): Loop A is the captain's conversation with
-you through the board; Loop B is the feeder narrating fleet evidence onto cards.
-Everything mechanical is automated. **You are the one gear that cannot be** — the only
-converter between the loops. The board works exactly as well as you play your part, and
-no better.
+- The user installs both skills, by name (`bridge`, `fleet-bridge`). Never reference the
+  bridge by repository path; `bridge-axi` lives in the installed bridge skill's dir
+  (e.g. `~/.claude/skills/bridge/bridge-axi`).
+- Always `--board fleet`. Port 4777, binds 0.0.0.0 (reachable from the captain's other
+  devices). State: `~/.bridge/boards/fleet.json`; archive: `fleet.archive.jsonl`.
+- Server startup is by captain's order only, never automatic. The order:
+  **"Captain on the bridge"** (or any clear ask for the board). Then:
+  `bridge-axi open --board fleet --host 0.0.0.0` (idempotent, prints URL) → arm the poll
+  and run the sync → hand him the URL, nothing else. A board already running stays
+  running.
 
-## Endpoints
+## The feeder's lane — never hand-do these
 
-- CLI: `bridge-axi` in the installed `bridge` skill's directory (e.g.
-  `~/.claude/skills/bridge/bridge-axi`), always `--board fleet` (port 4777; binds
-  0.0.0.0, reachable from the captain's other devices).
+`fm-board-sync` (this skill dir) reads a firstmate home read-only and feeds the board.
+It alone owns: events (status lines, PR state, worker-lease transitions — deduped, typed
+by kind), the kinds map, the worker lease (evidence-based, server-side TTL decay to
+`idle`), the `prs` attribute, brief artifacts, card birth for new in-flight work, archive
+on merge, resurrection of archived ids, type migration.
 
-## "Captain on the bridge" — starting the board
+- Board looks stale → run the sync. Never patch what the feeder owns.
+- Run it on every wake that changes fleet state:
+  `fm-board-sync --home <fm-home> --apply --board fleet` (no `--apply` = print plan).
+- Zero-token freshness between wakes — silent watcher shim:
 
-The bridge server is never started automatically — bringing the board up is the
-captain's order, and the order has a name. When the captain says **"Captain on the
-bridge"** (or otherwise clearly asks for the board), that is your cue:
+  ```sh
+  # <fm-home>/state/board-sync.check.sh — prints nothing, never wakes the agent
+  <this-skill-dir>/fm-board-sync --home <fm-home> --apply --board fleet >/dev/null 2>&1 || true
+  ```
 
-1. `bridge-axi open --board fleet --host 0.0.0.0` — idempotent: starts the server if
-   needed and prints the URL.
-2. Arm the poll and run the sync (sections below) — a fresh server means no poll is
-   listening yet.
-3. Hand the captain the URL. Nothing else; the board speaks for itself.
+## Your gear — deliberate, never automated
 
-Until that order, never boot the server as a side effect of session start, syncing, or
-anything else. The order governs startup only: a board already running stays running,
-and everything in this skill applies whenever it is up.
-- Board state persists in `~/.bridge/boards/fleet.json`; archived cards in
-  `~/.bridge/boards/fleet.archive.jsonl`.
-
-## A. The feeder's lane — you must NOT hand-do these
-
-`fm-board-sync` (this skill dir) is Loop B: it reads a firstmate home's on-disk state
-(read-only) and feeds the board every run. It alone handles:
-
-- **Events** from status lines, PR state, and worker lease transitions (deduped,
-  typed by kind).
-- **The kinds map** — registered on every run (`PUT /api/kinds`, idempotent).
-- **Worker lease** via `status.set` — evidence-based (status/turn-end mtimes), with
-  server-side TTL decay to an honest `idle`; never pane sampling. A dead runtime
-  window clears the lease (worker absent) even while the task record persists.
-- **The `prs` list** attribute (`{url, state}` from meta and backlog Done verbs).
-- **Artifacts** — the worker brief attached at card birth.
-- **Card birth** for new in-flight work, and **archive on merge** (reason `merged`).
-- **Resurrection**: live evidence for an archived card id calls `card.restore` — frozen
-  history plus a loud level-1 event, never a blank rebirth.
-- **Type migration**: leftover `discussion` cards are patched to `plan`.
-
-Hand-doing any of these duplicates the single writer and desyncs the board. If the board
-looks stale, run the sync — don't patch what the feeder owns. Run it on every wake that
-changes fleet state:
-
-```sh
-fm-board-sync --home <fm-home> --apply --board fleet   # --port 4777 default; no --apply = print plan
-```
-
-For zero-token freshness between wakes, drop a silent shim so the watcher's check
-mechanism runs it:
-
-```sh
-# <fm-home>/state/board-sync.check.sh — prints nothing, never wakes the agent
-<this-skill-dir>/fm-board-sync --home <fm-home> --apply --board fleet >/dev/null 2>&1 || true
-```
-
-## B. Your gear — always deliberate, never automated
-
-The system breaks if you skip any of these. The feeder is forbidden from doing them:
-
-- **Handoffs are `card.move`.** Work ready for the captain: verify the outcome, rewrite
-  the body, THEN `bridge-axi move <id> review` — the level-1 move event IS the handoff
-  notification. Work finishing never auto-advances a card; the wake tells you, you decide.
-- **Rewrite the body before every handoff.** The body is the deliverable the captain
-  reads — always CURRENT state, never a log (history lives in events).
-- **Reply in threads.** A captain message in a thread sets `owed` — the captain sees a
-  waiting balloon until YOUR reply clears it. Answer every thread you owe.
-- **Link dispatched work.** Before spawning work for a captain card, add a
-  `data/board-aliases` line in the owner home: `<task-id> <card-id>` — that is how Loop B
-  narrates onto the right card instead of minting a duplicate. Your own direct
-  subagent-delegates (no on-disk task files) link with
+- Handoff = `bridge-axi move <id> review`. Verify the outcome, rewrite the body, THEN
+  move; the level-1 move event IS the notification. Finished work never auto-advances a
+  card — the wake tells you, you decide.
+- The body is the deliverable. Rewrite it to CURRENT state before every handoff; never a
+  log (history lives in events).
+- Answer every thread you owe. A captain thread message sets `owed`; only your reply
+  clears his waiting balloon.
+- Link before spawning. Work for a captain card: add a `data/board-aliases` line
+  `<task-id> <card-id>` in the owner home BEFORE spawn — that is how the feeder narrates
+  onto the right card instead of minting a duplicate. Direct subagents (no on-disk task):
   `fm-subagent --home <h> set <agent-id> --card <card-id> --state working` on dispatch
-  (`clear` unlinks; it rides existing cards, never mints).
-- **Archive beyond merge.** Merge-archive is the feeder's; every other "this is dead /
-  landed / acted on" archive is your call: `bridge-axi archive <id> [--note ...]`.
-- **Answer the feed — the poll discipline is the watcher discipline.** Keep exactly ONE
-  `bridge-axi poll --board fleet` running as a harness-tracked background task at ALL
-  times while the board is in operation. The poll is the captain's ONLY path to you from
-  the board: a dead poll means his card messages sit unanswered indefinitely and NOTHING
-  else wakes you. So, non-negotiable, mirroring "no turn ends blind":
-  - The poll dies with every server restart and every fire. **Re-arm it in the SAME turn**
-    that restarted the server or handled the fire — never defer to "next turn".
-  - **No turn ends deaf**: before ending ANY turn while the board is live, if you cannot
-    point to a live poll task you armed or verified this turn, arm one now.
-  - Never launch it with a shell `&`; only as the harness's own tracked background task.
-  On poll exit: handle each JSON line, reply, `bridge-axi ack <seq>` with the highest seq
-  handled, re-run poll:
-  - `message` — captain instruction in that context: act through the NORMAL firstmate
-    lifecycle (steer/dispatch/merge on word), then reflect the outcome on the card.
-  - `card-created` — awareness only (intake contract below). Ack it.
-  - `card-moved` — to `peer`: hands-off (captain territory). Out of `peer`: handback,
-    resume. Anywhere else: captain reprioritized; reconcile.
+  (`clear` unlinks; rides existing cards, never mints).
+- Archive beyond merge is your call: `bridge-axi archive <id> [--note ...]` when work is
+  dead, landed, or acted on. Merge-archive is the feeder's.
 
-  Ack only after handling. Delivery is at-least-once: unacked lines re-offer on every
-  poll, so a dead poller drops nothing; repeats (same `seq`) mean the previous handling
-  never acked — dedupe by `seq`, never re-act.
+## The poll — non-negotiable
 
-## C. Contracts
+- Keep exactly ONE `bridge-axi poll --board fleet` alive as a harness-tracked background
+  task the whole time the board is up. It is the captain's ONLY path to you from the
+  board; a dead poll = his messages sit unanswered and nothing wakes you.
+- The poll dies with every server restart and every fire. Re-arm it in the SAME turn.
+- No turn ends deaf: if you cannot point to a live poll you armed or verified this turn,
+  arm one now, before ending the turn.
+- Never launch it with a shell `&`.
+- On fire: handle each JSON line → reply → `bridge-axi ack <highest seq handled>` →
+  re-run the poll. Ack only after handling. A repeated `seq` was handled but never
+  acked: dedupe by `seq`, never re-act.
+- `message` = captain instruction in that context. Act through the NORMAL firstmate
+  lifecycle, then reflect the outcome on the card.
+- `card-created` = awareness only: ack it, no reply owed, no work implied. Act only when
+  the captain speaks; a thread "go" becomes work on the SAME card, linked before spawn.
+- `card-moved` to `peer` = hands-off. Out of `peer` = handback, resume. Anywhere else =
+  captain reprioritized; reconcile.
 
-**Columns and territory.** `💡 Ideas → 🔨 Working → 👀 Your review → 🤝 Peer review`
-(ids: `ideas working review peer`). No Done: cards leave by archive. Up to and including
-Your review the card is yours — move it freely as work progresses. Once the captain moves
-a card to Peer review it is the CAPTAIN's: do not move or rewrite it. Moving it back out
-is a handback. **Merge-kill exception**: a merge is objective and terminal — archive from
-ANY column, including Peer review. Columns are owned state, never computed: the feeder
-NEVER moves cards; every transition is a deliberate act by captain or you.
+## Board rules
 
-**Card types** (the `type` attribute; bridge renders the emoji):
+- Columns: `💡 Ideas → 🔨 Working → 👀 Your review → 🤝 Peer review`
+  (ids: `ideas working review peer`). No Done — cards leave by archive.
+- Through Your review the card is yours; move it freely. In Peer review it is the
+  CAPTAIN's: never move or rewrite it; him moving it out = handback.
+- Exception: a merge is objective and terminal — archive from ANY column.
+- The feeder never moves cards. Every move is the captain's drag or your deliberate act.
+- Types: `plan` 🧠 (default for captain cards; covers discussion) · `implementation` 🔥 ·
+  `investigation` 🕵️‍♂️. Attributes: `type`, `repo`, `owner`, `prs`, `artifacts`.
+- Questions ride threads, never cards: `bridge-axi say card:<id>` + a level-1 `question`
+  event; no card → `say chat`.
+- English only, everything on the board. Outcomes, not machinery; full PR URLs. The
+  captain's native-language conversation stays in the agent chat.
+- Levels: 1 = bell — `done` ✅, `failed` 💥, `needs-you` ✋, `blocked` 🚧, handoffs,
+  merge/kill archives. 2 = timeline only — `progress` 📣, `pr-opened` 🔀, `pr-merged` 🟣,
+  `worker-linked` 🔗, `worker-gone` 💤. The feeder registers the kinds map every run;
+  bridge structural kinds stay built-in.
+- Board = mirror. Firstmate's files stay canonical; on disagreement, fix the board.
+- Text via `--text-file`/`--body-file` or stdin, never shell-interpolated.
 
-| Type | Emoji | Body deliverable |
-|---|---|---|
-| `plan` | 🧠 | the plan to validate |
-| `implementation` | 🔥 | what changes + why; PRs ride the `prs` attribute |
-| `investigation` | 🕵️‍♂️ | findings (scout report essence) |
+## Standing habits while this skill is active
 
-There is no `discussion` type — `plan` covers it (a conversation IS early planning), and
-`plan` is the default for captain-created cards. Standard attributes: `type`, `repo`,
-`owner` (`firstmate` or the secondmate id), `prs`, `artifacts` (`{uri, label}`, e.g. the
-worker brief as `file://...`).
+- Every ship/scout brief you write gets one added instruction: append a one-line
+  `working: <headline>` status at real milestones — branch created, approach decided,
+  implementation committed, tests green, PR opened. Every 10-30 min of progress, not
+  per-edit chatter. The feeder turns each into a 📣 `progress` event: a green card that
+  says what its worker is doing. Brief-content rule of THIS skill, never a change to the
+  firstmate template.
+- The captain states a durable preference on the board → record it in `data/captain.md`
+  the same turn.
 
-**Captain-card intake: creating a card is not a demand.** A captain-created card is the
-captain organizing thought. The `card-created` feed item is awareness only — no reply is
-owed, no work is implied. Act only when the captain speaks, in the card's thread or main
-chat; a thread "go" becomes dispatched work on the SAME card (never a duplicate), linked
-via `data/board-aliases` before spawning.
+## Placement
 
-**Questions ride threads, never cards.** Ask in the relevant card's thread
-(`bridge-axi say card:<id>`) plus a level-1 `question` event; a question with no card
-rides main chat (`say chat`).
-
-**English only**, everything on the board: titles, bodies, events, chat replies. The
-captain's native-language conversation stays in the agent chat. Captain-facing language
-rules apply (outcomes, not machinery; full PR URLs).
-
-**Event kinds and levels.** The feeder registers the fleet kinds map every run;
-levels resolve from it (bridge structural kinds — created, handoff, landed, … — stay
-built-in). Level 1 = bell-worthy: `done` ✅, `failed` 💥, `needs-you` ✋, `blocked` 🚧,
-plus handoffs (your moves) and merge/kill archives. Level 2 = timeline only, behind
-the "· N events ·" expanders: `progress` 📣 (any other status line), `pr-opened` 🔀,
-`pr-merged` 🟣 (the attribute note before the merge-archive's `landed` bell),
-`worker-linked` 🔗 / `worker-gone` 💤 (lease transitions, fired once per change).
-
-**Worker briefs narrate milestones.** When this skill is active, every ship/scout brief
-you write gets one instruction added to its task section: append a one-line
-`working: <headline>` status at meaningful milestones — branch created, approach decided,
-implementation committed, tests green, PR opened, review round addressed. One short
-headline per milestone (every 10-30 min of real progress, not per-edit chatter). The
-watcher absorbs no-verb `working:` lines at zero cost while the worker is provably
-working, and the feeder turns each one into a 📣 `progress` event — this is what keeps a
-green card telling the captain what its worker is actually doing. This is a brief-content
-rule of THIS skill, not a change to the firstmate template's scaffold.
-
-**Preferences become memory.** When the captain expresses a durable preference in a board
-conversation (how work ships, what plans must spell out, reply style), record it in the
-captain's memory (`data/captain.md`) in the same turn — the skill applies it now, the
-memory keeps it applied when this skill is the only context that saw it.
-
-**Board = mirror.** Firstmate's files stay canonical; when they disagree, fix the board.
-
-**Placement test.** Makes sense for any agent running a board → `bridge`. Requires
-knowing what a crewmate, PR, or backlog is → here. No firstmate vocabulary, paths, or
-logic ever lands in the `bridge` skill.
-
-**Fleet-private data** (board aliases, board name choice) stays in the firstmate home's
-`data/`, never inside either skill (both may live in public repos).
-
-Text via `--text-file`/`--body-file` or stdin, never shell-interpolated.
+- Makes sense for any board-running agent → `bridge`. Needs crewmate/PR/backlog
+  vocabulary → here. No firstmate vocabulary, paths, or logic ever lands in the `bridge`
+  skill.
+- Fleet-private data (board aliases, board name choice) stays in the firstmate home's
+  `data/`, never inside either skill (both may live in public repos).
