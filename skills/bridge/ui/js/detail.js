@@ -170,15 +170,26 @@ bodyInput.onkeydown = (e) => {
 const avOverlay = document.getElementById('av-overlay');
 const avName = document.getElementById('av-name');
 const avBody = document.getElementById('av-body');
+const MD_EXT = /\.(md|markdown)$/i;
 async function openArtifact(uri) {
-  avName.textContent = uriBasename(uri) || uri;
+  const name = uriBasename(uri) || uri;
+  avName.textContent = name;
   avName.title = uri;
+  avBody.className = ''; // plain until content lands
   avBody.textContent = 'loading…';
   avOverlay.hidden = false;
   try {
     const r = await api.artifact(uri);
-    avBody.textContent = r.content;
+    if (MD_EXT.test(name)) {
+      // reuse the board's card-body markdown renderer (md.js) — no new library
+      avBody.className = 'md';
+      avBody.innerHTML = md(r.content);
+    } else {
+      avBody.className = '';
+      avBody.textContent = r.content; // non-markdown: plain preformatted text
+    }
   } catch (e) {
+    avBody.className = '';
     avBody.textContent = '⚠ no preview — ' + e.message; // binary / too large / unreadable
   }
 }
