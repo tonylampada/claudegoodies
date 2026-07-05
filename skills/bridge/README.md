@@ -14,8 +14,23 @@ migrate-v1.js   one-shot v1 → v2 board converter
 
 State: `~/.bridge/boards/<name>.json` (board), `<name>.archive.jsonl` (archived cards,
 append-only), `<name>.feedback.jsonl` (human→agent queue), `<name>.feedback.ack`
-(the committed ack cursor — the only cursor), `~/.bridge/config.json` (user config,
-e.g. TTS voice filter).
+(the committed ack cursor — the only cursor), `~/.bridge/config.json` (user config).
+
+## User config (`~/.bridge/config.json`)
+
+Machine-private; never passed on the command line by agents.
+
+```jsonc
+{
+  "host": "100.x.y.z",              // bind host. Default 127.0.0.1 (localhost-only).
+                                    // Set to a VPN/tailnet interface IP to reach the
+                                    // board from other devices without exposing it to
+                                    // the LAN. A non-loopback bind also listens on
+                                    // 127.0.0.1 so local CLI calls keep working.
+                                    // Precedence: --host flag > this key > 127.0.0.1.
+  "voices": ["Samantha", "Karen"]   // optional TTS voice filter for the UI 🔊 toggle
+}
+```
 
 ## Data model (v2)
 
