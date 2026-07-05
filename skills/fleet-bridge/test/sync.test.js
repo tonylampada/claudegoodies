@@ -91,6 +91,60 @@ test('evidence policy: needs-you outranks activity; freshness window is env-tuna
   }
 });
 
+test('run-step evidence: stale files but an actively-running validation keeps the lease working', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app', 'kind=ship']);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing']);
+    fx.backdate(path.join(home, 'state', 'fix-widget-a1.status'), 3600);
+
+    // stale mtime + the task branch (ship convention fm/<id>) in the active
+    // set: the run-step is working evidence, no idle decay mid-validation
+    await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: 'fm/fix-widget-a1' });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'working');
+
+    // stale mtime + some OTHER branch active: no evidence for this task -> idle
+    await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: 'fm/other-task-z9' });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'idle');
+
+    // empty override (no branch validating anywhere): idle as before
+    await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: '' });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'idle');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('run-step evidence: no-mistakes unavailable -> graceful idle, never fatal', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: [
+      'fix-widget-a1 - Fix widget (repo: demo-app)',
+      'ship-gadget-b2 - Ship gadget (repo: demo-app)',
+    ] });
+    // real-query path (no override): a worktree that is no git repo, and one
+    // that does not exist at all — both swallow the query error and fall back
+    fx.writeMeta(home, 'fix-widget-a1',
+      ['project=projects/demo-app', 'kind=ship', 'worktree=' + home]);
+    fx.writeMeta(home, 'ship-gadget-b2',
+      ['project=projects/other-app', 'kind=ship', 'worktree=' + path.join(home, 'no-such-dir')]);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing']);
+    fx.backdate(path.join(home, 'state', 'fix-widget-a1.status'), 3600);
+
+    const r = await fx.syncApply(s, home);
+    assert.strictEqual(r.code, 0, r.stderr);
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'idle');
+    assert.strictEqual((await fx.getCard(s, 'ship-gadget-b2')).status.worker.state, 'idle');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
 test('teardown: meta gone -> one unlink to absent, then the feeder stops asserting', async () => {
   const s = await startServer();
   const home = fx.makeHome();

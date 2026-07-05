@@ -57,6 +57,9 @@
 //        - last state/<id>.status line starts needs-decision:/blocked: -> needs-you
 //        - else recent activity (mtime of state/<id>.status or
 //          state/<id>.turn-ended within FM_SYNC_FRESH_SECS, default 600) -> working
+//        - else the task branch's no-mistakes run-step is actively running
+//          (a silent validation step writes no status line and fires no
+//          turn-end for 20+ minutes; the run DB is evidence too) -> working
 //        - else task meta still exists -> idle
 //        - task meta gone (torn down) -> one status.set with worker null (the
 //          unlink), then stop asserting
@@ -203,7 +206,7 @@ function parseMetas(stateDir) {
     const id = name.slice(0, -'.meta'.length);
     const src = readFileSafe(path.join(stateDir, name));
     if (src == null) continue;
-    const m = { kind: null, project: null, window: null, backend: null, prs: [] };
+    const m = { kind: null, project: null, window: null, backend: null, worktree: null, prs: [] };
     for (const line of src.split('\n')) {
       const kv = /^(\w+)=(.*)$/.exec(line.trim());
       if (!kv) continue;
@@ -265,11 +268,66 @@ function windowAlive(meta) {
   return liveTmuxWindows().has(meta.window);
 }
 
+// ---------- no-mistakes run-step evidence ----------
+// A worker deep in a silent validation step (a 20-minute test, a fix round,
+// a CI watch) writes no status line and fires no turn-end for the whole
+// stretch, so file freshness alone wrongly decays its lease to idle. The
+// no-mistakes run-step is the missing evidence: DB state read via
+// `no-mistakes runs` (per-repository, newest-first, plain rows
+// "<status> <branch> <sha> <date>") — still evidence, never a screen sample.
+// A branch is ACTIVE only while its most recent run reports status "running"
+// (completed/cancelled/failed are terminal). One bounded call per distinct
+// project per run, memoized (the listing covers every branch of that repo);
+// FM_SYNC_ACTIVE_BRANCHES (space/comma-separated branch names, may be empty)
+// overrides the real query for tests. no-mistakes missing, erroring, or slow
+// => empty set: today's idle behavior, never fatal.
+let activeBranchesOverride = null;
+const activeBranchesByProject = new Map();
+function activeBranches(meta) {
+  const env = process.env.FM_SYNC_ACTIVE_BRANCHES;
+  if (env !== undefined) {
+    if (!activeBranchesOverride) activeBranchesOverride = new Set(env.split(/[\s,]+/).filter(Boolean));
+    return activeBranchesOverride;
+  }
+  if (!meta.worktree) return new Set(); // nowhere to query from
+  const key = meta.project || meta.worktree;
+  if (activeBranchesByProject.has(key)) return activeBranchesByProject.get(key);
+  const set = new Set();
+  try {
+    const out = execFileSync('no-mistakes', ['runs', '--limit', '200'],
+      { encoding: 'utf8', cwd: meta.worktree, stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000 });
+    const decided = new Set(); // newest-first: the first row per branch wins
+    for (const raw of out.split('\n')) {
+      const cols = raw.trim().split(/\s+/);
+      if (cols.length < 2 || decided.has(cols[1])) continue;
+      decided.add(cols[1]);
+      if (cols[0] === 'running') set.add(cols[1]);
+    }
+  } catch (e) { /* no-mistakes missing or erroring: no run evidence this run */ }
+  activeBranchesByProject.set(key, set);
+  return set;
+}
+// The task's branch: read from the worktree when possible (authoritative),
+// else the ship convention fm/<id> (a just-spawned worktree sits detached; a
+// branch that never ran simply never matches the active set).
+function taskBranch(meta, taskId) {
+  if (meta.worktree) {
+    try {
+      const br = execFileSync('git',
+        ['-C', meta.worktree, 'symbolic-ref', '--quiet', '--short', 'HEAD'],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000 }).trim();
+      if (br) return br;
+    } catch (e) { /* detached HEAD or unreadable: fall through */ }
+  }
+  return 'fm/' + taskId;
+}
+
 // ---------- worker lease evidence ----------
-// The lease is derived from on-disk EVIDENCE only — status lines and turn-end
-// activity — never from screen/pane sampling. Returns {id, state} for a live
-// task, or null for a torn-down one (meta gone) or a dead runtime window
-// (worker gone while the meta lingers): both unlink.
+// The lease is derived from on-disk EVIDENCE only — status lines, turn-end
+// activity, and the no-mistakes run DB — never from screen/pane sampling.
+// Returns {id, state} for a live task, or null for a torn-down one (meta
+// gone) or a dead runtime window (worker gone while the meta lingers): both
+// unlink.
 function lastStatusVerb(statusLines) {
   if (!statusLines.length) return null;
   const line = statusLines[statusLines.length - 1];
@@ -285,7 +343,12 @@ function workerEvidence(stateDir, taskId, meta, statusLines) {
     const m = mtimeMs(path.join(stateDir, f));
     if (m != null && m >= cutoff) return { id: taskId, state: 'working' };
   }
-  return { id: taskId, state: 'idle' }; // alive but no recent activity
+  // Stale files are not proof of idleness: a silently-validating worker's
+  // branch shows an actively-running no-mistakes run-step, and that DB
+  // evidence keeps the lease working through the quiet stretch.
+  const active = activeBranches(meta);
+  if (active.size && active.has(taskBranch(meta, taskId))) return { id: taskId, state: 'working' };
+  return { id: taskId, state: 'idle' }; // alive, no recent activity, no active run
 }
 
 // ---------- prs list: [{url, state: open|merged|closed}] ----------
