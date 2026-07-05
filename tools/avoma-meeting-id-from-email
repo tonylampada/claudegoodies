@@ -84,9 +84,16 @@ def extract_ids(blob: str) -> list[str]:
     for s in strings:
         expanded = expand_text(s)
         candidates = [m.group(1) for m in AVOMA_MEETING_RE.finditer(expanded)]
-        # Fallback: only accept bare UUIDs if the surrounding expanded text mentions Avoma.
+        # Fallback: only accept bare UUIDs when they are clearly introduced as an
+        # Avoma meeting identifier. Avoma emails also contain AWS SES/click-tracker
+        # UUIDs; accepting every UUID from an Avoma-looking blob makes the ingest
+        # try bogus meetings and fail after processing the real one.
         if not candidates and "avoma" in expanded.lower():
-            candidates = [m.group(0) for m in UUID_RE.finditer(expanded)]
+            candidates = []
+            for m in UUID_RE.finditer(expanded):
+                ctx = expanded[max(0, m.start() - 80): m.end() + 80].lower()
+                if "meeting" in ctx and ("uuid" in ctx or "id" in ctx or "avoma" in ctx):
+                    candidates.append(m.group(0))
         for uuid in candidates:
             uuid = uuid.lower()
             if uuid not in seen:
