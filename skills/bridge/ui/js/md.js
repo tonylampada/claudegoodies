@@ -20,7 +20,13 @@ const TABLE_SEP = /^\s*\|(?:\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?\s*$/; // |---|:--:| 
 export function md(src) {
   const lines = esc(src || '').split('\n');
   let out = '', inCode = false, inList = false, para = [];
-  const flushPara = () => { if (para.length) { out += '<p>' + mdInline(para.join(' ')) + '</p>'; para = []; } };
+  // A single newline inside a paragraph is a soft break -> <br> (GitHub
+  // `breaks: true`). Lines are joined with \n (a sentinel: neither the escaped
+  // source lines nor mdInline's output ever contain \n), inline markdown is
+  // applied, then each \n becomes <br>. Blank lines still separate paragraphs
+  // (they flush para), and fenced code is emitted on the inCode path below, so
+  // its newlines stay literal and never reach here.
+  const flushPara = () => { if (para.length) { out += '<p>' + mdInline(para.join('\n')).replace(/\n/g, '<br>') + '</p>'; para = []; } };
   const closeList = () => { if (inList) { out += '</ul>'; inList = false; } };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];

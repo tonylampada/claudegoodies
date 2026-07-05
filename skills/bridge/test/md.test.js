@@ -58,3 +58,30 @@ test('pipe lines inside a code fence stay verbatim', async () => {
   assert.ok(!out.includes('<table>'));
   assert.ok(out.includes('| a | b |'));
 });
+
+test('single newline inside a paragraph renders as a <br> soft break', async () => {
+  const out = await md('line one\nline two');
+  assert.strictEqual(out, '<p>line one<br>line two</p>');
+});
+
+test('blank line still separates paragraphs (no <br> across the break)', async () => {
+  const out = await md('para one\n\npara two');
+  assert.strictEqual(out, '<p>para one</p><p>para two</p>');
+});
+
+test('soft-break lines run through inline markdown', async () => {
+  const out = await md('**bold**\n`code`');
+  assert.strictEqual(out, '<p><strong>bold</strong><br><code>code</code></p>');
+});
+
+test('newlines inside a code fence stay literal, never <br>', async () => {
+  const out = await md('```\na\nb\n```');
+  assert.ok(!out.includes('<br>'));
+  assert.ok(out.includes('a\nb\n'));
+});
+
+test('headings and lists are unaffected by soft breaks', async () => {
+  const out = await md('# Title\n- one\n- two');
+  assert.strictEqual(out, '<h1>Title</h1><ul><li>one</li><li>two</li></ul>');
+  assert.ok(!out.includes('<br>'));
+});
