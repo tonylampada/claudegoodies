@@ -59,6 +59,13 @@ export function prChipHtml(pr, withState) {
     ' title="' + esc(pr.url) + ' (' + state + ')">' + esc(label) + '</a>';
 }
 
+// last path segment of a uri/path (query/hash stripped) — the artifact display name
+export function uriBasename(uri) {
+  const s = String(uri).replace(/[?#].*$/, '').replace(/\/+$/, '');
+  const i = s.lastIndexOf('/');
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
 // attributes.artifacts — [{uri, label}] — resources hung on the card (briefs, docs)
 export function cardArtifacts(card) {
   const v = card && card.attributes && card.attributes.artifacts;

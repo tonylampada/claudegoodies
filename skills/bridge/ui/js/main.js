@@ -3,7 +3,7 @@ import { S, onRender, render, cards, cardUnread, threadUnread, notifUnreadCount,
 import { trackMessages } from './voice.js';
 import { renderBoard, newCardOpen, closeNewCard, closeMoveMenu } from './board.js';
 import { renderChat, onOpenCard as chatOnOpenCard } from './chat.js';
-import { renderDetail, openDetail, closeDetail, detailOpen } from './detail.js';
+import { renderDetail, openDetail, closeDetail, detailOpen, closeArtifact, artifactOpen } from './detail.js';
 import { renderNotifications, onOpenCard as notifOnOpenCard } from './notify.js';
 import { renderLabelManager, renderPicker, pickerIsOpen, closeLabelPicker } from './labels.js';
 
@@ -92,7 +92,8 @@ document.addEventListener('keydown', (e) => {
   const inField = /^(INPUT|TEXTAREA|SELECT)$/.test((active && active.tagName) || '');
   if (e.key === '/' && !inField) { e.preventDefault(); filterInput.focus(); return; }
   if (e.key === 'Escape') {
-    if (newCardOpen()) closeNewCard();
+    if (artifactOpen()) closeArtifact();
+    else if (newCardOpen()) closeNewCard();
     else if (pickerIsOpen()) closeLabelPicker();
     else if (S.notifOpen) { S.notifOpen = false; render(); }
     else if (!spEl.hidden) { spEl.hidden = true; gearBtn.classList.remove('on'); }

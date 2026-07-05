@@ -23,5 +23,6 @@ export const api = {
   markAllNotifRead: () => j('POST', '/api/notifications/read', { user: 'user', all: true }),
   markThreadRead: (target) => j('POST', '/api/read', { user: 'user', target }),
   labels: (body) => j('POST', '/api/labels', body),
+  artifact: (uri) => j('GET', '/api/artifact?uri=' + encodeURIComponent(uri)),
   config: () => j('GET', '/api/config'),
 };

@@ -109,6 +109,14 @@
   <div class="dt-labels" id="dt-labels"></div>
   <div class="dt-scroll">
     <div class="dt-body md" id="dt-body"></div>
+    <button id="dt-body-edit" type="button" title="edit description">✎ edit</button>
+    <div id="dt-body-editor" hidden>
+      <textarea id="dt-body-input" rows="8" spellcheck="false" placeholder="body (markdown)"></textarea>
+      <div class="dt-body-actions">
+        <button type="button" id="dt-body-cancel">cancel</button>
+        <button type="button" id="dt-body-save">save</button>
+      </div>
+    </div>
     <div class="dt-artifacts" id="dt-artifacts"></div>
     <div class="dt-events-head">timeline</div>
     <div class="dt-events" id="dt-events"></div>
@@ -123,13 +131,25 @@
   <form id="nc-modal">
     <div class="nc-title">New card</div>
     <input id="nc-name" placeholder="title" autocomplete="off" required>
-    <select id="nc-column"></select>
+    <select id="nc-type" title="card type">
+      <option value="plan">🧠 plan</option>
+      <option value="implementation">🔥 implementation</option>
+      <option value="investigation">🕵️‍♂️ investigation</option>
+    </select>
     <textarea id="nc-body" placeholder="body (markdown, optional)" rows="5"></textarea>
     <div class="nc-actions">
       <button type="button" id="nc-cancel">cancel</button>
       <button type="submit" id="nc-create">create</button>
     </div>
   </form>
+</div>
+
+<!-- artifact viewer -->
+<div id="av-overlay" hidden>
+  <div id="av-modal">
+    <div class="av-head"><span class="av-name" id="av-name"></span><button id="av-close" title="close">✕</button></div>
+    <pre id="av-body"></pre>
+  </div>
 </div>
 
 <script type="module" src="/ui/js/main.js"></script>

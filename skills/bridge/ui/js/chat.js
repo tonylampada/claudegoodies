@@ -1,6 +1,6 @@
 // chat panel: unified main feed (messages + card-thread bubbles anchored at thread
 // start), whole-window mode switch into a card thread, premium composer.
-import { S, card, cards, cardStatus, cardActivityTs, render, threadUnread, targetOwed, targetOwedStale, USER } from './state.js';
+import { S, card, cardStatus, cardActivityTs, render, threadUnread, targetOwed, targetOwedStale, USER } from './state.js';
 import { api } from './api.js';
 import { esc, hhmm, dayLabel, cardEmoji } from './util.js';
 import { md } from './md.js';
@@ -75,24 +75,10 @@ function typingHtml(stale) {
     '<span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>' +
     '<span class="lbl">agent owes you a reply…</span></div>';
 }
-function bubbleHtml(c) {
-  const n = (c.thread || []).length;
-  const unread = threadUnread('card:' + c.id, c.thread);
-  return '<div class="tbubble" data-card="' + esc(c.id) + '" title="open this card\'s conversation">' +
-    '<span class="em">' + esc(cardEmoji(c)) + '</span>' +
-    '<div class="tt"><div class="t1">' + esc(c.title || c.id) + '</div>' +
-    '<div class="t2">' + n + ' message' + (n === 1 ? '' : 's') + '</div></div>' +
-    (unread ? '<span class="unread">' + unread + '</span>' : '') + '</div>';
-}
-
 function mainFeedItems() {
-  // chat messages + one bubble per card thread, anchored at the FIXED point the
-  // card conversation started (threadStart) — never re-anchored by new activity.
+  // main-chat messages only; card threads live in their own card view
   const items = [];
   for (const m of (S.doc && S.doc.chat) || []) items.push({ ts: m.ts, html: msgHtml(m) });
-  for (const c of cards()) {
-    if (c.threadStart && (c.thread || []).length) items.push({ ts: c.threadStart, html: bubbleHtml(c) });
-  }
   items.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
   return items;
 }
@@ -140,10 +126,6 @@ export function renderChat() {
   if (switched) scrollFeedToBottom(); // deferred: the feed may still be hidden this frame
   else if (pinned) feedEl.scrollTop = feedEl.scrollHeight;
 
-  feedEl.querySelectorAll('.tbubble').forEach((b) => {
-    b.onclick = () => openCardThread(b.dataset.card);
-  });
-
   // wire speak buttons: .msg.agent[data-speak] in DOM order maps 1:1 to speakMsgs
   const speakBtns = feedEl.querySelectorAll('.msg.agent [data-speak]');
   speakBtns.forEach((btn, i) => {
@@ -189,7 +171,8 @@ async function send() {
   try { await api.feedback(currentTarget(), text); } catch (e) { alert(e.message); }
 }
 inputEl.oninput = () => autoGrow(inputEl);
+// Enter inserts a newline; Cmd+Enter (mac) or Ctrl+Enter sends.
 inputEl.onkeydown = (e) => {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey || !e.shiftKey)) { e.preventDefault(); send(); }
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
 };
 document.getElementById('chat-form').onsubmit = (e) => { e.preventDefault(); send(); };

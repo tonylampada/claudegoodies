@@ -596,6 +596,22 @@ const server = http.createServer(async (req, res) => {
       const items = notificationItems(url.searchParams.get('user'));
       return sendJson(res, 200, { items, unread: items.filter((e) => !e.read).length });
     }
+    // Artifact preview: text content of a local artifact, for the UI's popup
+    // viewer. Only a uri listed verbatim in some live card's attributes.artifacts
+    // is servable — never an arbitrary file read.
+    if (route === 'GET /api/artifact') {
+      const uri = url.searchParams.get('uri') || '';
+      const listed = board.cards.some((c) => Array.isArray(c.attributes && c.attributes.artifacts) &&
+        c.attributes.artifacts.some((a) => a && a.uri === uri));
+      if (!listed) return sendJson(res, 404, { error: 'unknown artifact' });
+      const file = uri.startsWith('file://') ? uri.slice('file://'.length) : uri;
+      let data;
+      try { data = fs.readFileSync(file); }
+      catch (e) { return sendJson(res, 404, { error: 'unreadable: ' + e.message }); }
+      if (data.length > 2e6) return sendJson(res, 413, { error: 'file too large to preview' });
+      if (data.includes(0)) return sendJson(res, 415, { error: 'binary file' });
+      return sendJson(res, 200, { name: path.basename(file), content: data.toString('utf8') });
+    }
 
     // ----- cards -----
     if (route === 'POST /api/cards') {

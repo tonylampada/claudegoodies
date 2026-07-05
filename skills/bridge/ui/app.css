@@ -143,21 +143,6 @@ input, textarea, select { font: inherit; color: var(--text); }
 .msg-speak.speaking { opacity: 1; color: var(--accent); border-color: var(--accent2); }
 @media (hover: none) { .msg-speak { opacity: .6; } } /* touch: always visible, small */
 
-/* card-thread bubble anchored in the main feed */
-.tbubble {
-  align-self: stretch; display: flex; align-items: center; gap: 9px;
-  background: var(--panel); border: 1px solid var(--line2); border-radius: var(--radius);
-  padding: 9px 12px; cursor: pointer; transition: border-color .15s, background .15s;
-}
-.tbubble:hover { border-color: var(--accent2); background: var(--panel2); }
-.tbubble .em { font-size: 16px; flex: none; }
-.tbubble .tt { flex: 1; min-width: 0; }
-.tbubble .tt .t1 { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tbubble .tt .t2 { font-size: 10.5px; color: var(--faint); }
-.tbubble .unread {
-  flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
-  background: var(--accent); color: #04121f; font-size: 10.5px; font-weight: 700; line-height: 18px; text-align: center;
-}
 .feed-day { align-self: center; color: var(--faint); font-size: 10.5px; margin: 6px 0 2px; font-family: var(--mono); }
 
 /* composer */
@@ -221,7 +206,8 @@ input, textarea, select { font: inherit; color: var(--text); }
   flex: 1; font-size: 14.5px; font-weight: 570; line-height: 1.35;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.tile .t-labels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+/* label + PR chips share ONE wrapping row — keeps tiles vertically compact */
+.tile .t-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; align-items: center; }
 .tile .t-foot { display: flex; align-items: center; gap: 7px; margin-top: 6px; font-size: 12px; color: var(--faint); }
 .tile .t-foot .grow { flex: 1; }
 .tile .t-owner { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -247,7 +233,6 @@ input, textarea, select { font: inherit; color: var(--text); }
 .pr-open { color: var(--ok); border-color: var(--ok); }
 .pr-merged { color: #c678dd; border-color: #c678dd; }
 .pr-closed { color: var(--danger); border-color: var(--danger); }
-.tile .t-prs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .label {
   font-size: 13px; padding: 2px 8px; border-radius: 4px; background: var(--panel2);
   border: 1px solid var(--faint); color: var(--dim); cursor: pointer; white-space: nowrap;
@@ -386,13 +371,32 @@ input, textarea, select { font: inherit; color: var(--text); }
 .dlabel button { color: var(--faint); font-size: 9px; padding: 0; }
 .dlabel button:hover { color: var(--danger); }
 .dt-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; }
-.dt-body { padding-bottom: 14px; font-size: 15px; line-height: 1.55; }
+.dt-body { font-size: 15px; line-height: 1.55; }
 .dt-body:empty::before { content: "no body yet"; color: var(--faint); font-size: 12px; }
+/* inline description editor (mirrors the label-add / new-card affordances) */
+#dt-body-edit {
+  display: inline-block; background: var(--panel); border: 1px dashed var(--line2); border-radius: 4px;
+  color: var(--dim); font-size: 11px; padding: 2px 8px; margin: 8px 0 14px;
+}
+#dt-body-edit:hover { border-color: var(--accent2); color: var(--accent); }
+#dt-body-editor { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 14px; }
+#dt-body-input {
+  width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 11px; font-size: 12px; font-family: var(--mono); line-height: 1.5;
+  outline: none; resize: vertical; min-height: 120px;
+}
+#dt-body-input:focus { border-color: var(--accent2); }
+.dt-body-actions { display: flex; gap: 8px; justify-content: flex-end; }
+#dt-body-cancel { color: var(--dim); border: 1px solid var(--line); border-radius: 7px; padding: 4px 11px; font-size: 12px; }
+#dt-body-cancel:hover { color: var(--text); }
+#dt-body-save { background: var(--accent2); border-radius: 7px; color: #eaf6ff; padding: 4px 13px; font-size: 12px; }
+#dt-body-save:hover { background: var(--accent); color: #06222f; }
 .dt-events-head {
   font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 1px;
   color: var(--faint); border-top: 1px solid var(--line); padding-top: 12px; margin-top: 4px;
 }
-/* artifacts list — attributes.artifacts [{uri, label}]; file:// uris copy on click */
+/* artifacts list — attributes.artifacts [{uri, label}], shown by filename;
+   local uris open in the artifact viewer popup, http(s) uris open normally */
 .dt-artifacts:empty { display: none; }
 .dt-arts-head {
   font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 1px;
@@ -406,10 +410,8 @@ input, textarea, select { font: inherit; color: var(--text); }
   font-family: var(--mono); font-size: 11.5px; color: var(--dim);
   background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
 }
-code.a-uri { cursor: copy; }
+code.a-uri { cursor: pointer; }
 code.a-uri:hover { color: var(--text); border-color: var(--line2); }
-code.a-uri.copied { color: var(--ok); border-color: var(--ok); }
-code.a-uri.copied::after { content: " copied"; }
 a.a-uri { color: var(--accent); }
 .dt-events { display: flex; flex-direction: column; padding: 10px 0 20px; }
 .ev { display: flex; gap: 10px; position: relative; padding: 0 0 14px 2px; }
@@ -460,17 +462,37 @@ a.a-uri { color: var(--accent); }
   box-shadow: var(--shadow); animation: pop-in .15s ease-out;
 }
 .nc-title { font-weight: 650; font-size: 14px; }
-#nc-name, #nc-body, #nc-column {
+#nc-name, #nc-body, #nc-type {
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
   padding: 8px 11px; font-size: 13px; outline: none; width: 100%;
 }
-#nc-name:focus, #nc-body:focus, #nc-column:focus { border-color: var(--accent2); }
+#nc-name:focus, #nc-body:focus, #nc-type:focus { border-color: var(--accent2); }
+#nc-type { cursor: pointer; }
 #nc-body { resize: vertical; min-height: 80px; font-family: var(--mono); font-size: 12px; }
 .nc-actions { display: flex; gap: 8px; justify-content: flex-end; }
 #nc-cancel { color: var(--dim); border: 1px solid var(--line); border-radius: 7px; padding: 6px 13px; font-size: 12.5px; }
 #nc-cancel:hover { color: var(--text); }
 #nc-create { background: var(--accent2); border-radius: 7px; color: #eaf6ff; padding: 6px 15px; font-size: 12.5px; }
 #nc-create:hover { background: var(--accent); color: #06222f; }
+
+/* ---------- artifact viewer ---------- */
+#av-overlay {
+  position: fixed; inset: 0; z-index: 95; background: rgba(4, 7, 11, .6);
+  display: flex; align-items: center; justify-content: center; backdrop-filter: blur(2px);
+}
+#av-modal {
+  width: min(760px, calc(100vw - 28px)); max-height: 82vh; display: flex; flex-direction: column;
+  background: var(--bg2); border: 1px solid var(--line2); border-radius: 14px;
+  box-shadow: var(--shadow); animation: pop-in .15s ease-out; overflow: hidden;
+}
+.av-head { flex: none; display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.av-head .av-name { flex: 1; min-width: 0; font-weight: 650; font-size: 13px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#av-close { flex: none; color: var(--dim); font-size: 15px; padding: 2px 6px; }
+#av-close:hover { color: var(--text); }
+#av-body {
+  flex: 1; min-height: 60px; overflow: auto; padding: 12px 16px; margin: 0;
+  font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere;
+}
 
 /* ---------- mobile ---------- */
 @media (max-width: 760px) {
@@ -484,7 +506,7 @@ a.a-uri { color: var(--accent); }
      blows up the whole layout. Force every focusable text input to 16px on
      mobile so focus never triggers a zoom (the accessible fix; the viewport
      maximum-scale is only a secondary guard). */
-  #filter, .composer textarea, #lp-input, #nc-name, #nc-body, #nc-column { font-size: 16px; }
+  #filter, .composer textarea, #lp-input, #nc-name, #nc-body, #nc-type, #dt-body-input { font-size: 16px; }
   #layout { flex-direction: column; min-height: 0; }
   /* each view fills the space above the tab bar and owns its own scroll region */
   #chat { width: 100%; flex: 1; min-height: 0; border-right: none; display: none; }

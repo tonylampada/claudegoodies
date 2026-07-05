@@ -47,8 +47,7 @@ function tileHtml(c) {
     '<div class="t-row1"><span class="t-emoji">' + esc(cardEmoji(c)) + '</span>' +
     '<span class="t-title">' + esc(c.title || c.id) + '</span>' +
     cornerInd + '</div>' +
-    (labels ? '<div class="t-labels">' + labels + '</div>' : '') +
-    (prs ? '<div class="t-prs">' + prs + '</div>' : '') +
+    (labels || prs ? '<div class="t-chips">' + labels + prs + '</div>' : '') +
     '<div class="t-foot">' +
     (owner ? '<span class="t-owner' + (filterSelected('owner', owner) ? ' active' : '') + '" data-owner="' + esc(owner) +
       '" title="filter by owner"><span class="dot" style="background:' + ownerColor(owner) + '"></span>' + esc(owner) + '</span>' : '') +
@@ -174,16 +173,11 @@ document.addEventListener('click', (e) => { if (!menuEl.hidden && !menuEl.contai
 
 // ---------- new card modal ----------
 const ncOverlay = document.getElementById('nc-overlay');
-const ncColumn = document.getElementById('nc-column');
+const ncType = document.getElementById('nc-type');
+let ncColumnId = ''; // the column whose "+" opened the modal — the create target
 export function openNewCard(columnId) {
-  ncColumn.textContent = '';
-  for (const col of columns()) {
-    const o = document.createElement('option');
-    o.value = col.id;
-    o.textContent = col.title;
-    ncColumn.appendChild(o);
-  }
-  ncColumn.value = columnId || (columns()[0] && columns()[0].id) || '';
+  ncColumnId = columnId || (columns()[0] && columns()[0].id) || '';
+  ncType.value = 'plan';
   document.getElementById('nc-name').value = '';
   document.getElementById('nc-body').value = '';
   ncOverlay.hidden = false;
@@ -199,7 +193,7 @@ document.getElementById('nc-modal').onsubmit = async (e) => {
   if (!title) return;
   const body = document.getElementById('nc-body').value;
   try {
-    const r = await api.createCard({ title, column: ncColumn.value, body });
+    const r = await api.createCard({ title, column: ncColumnId, body, attributes: { type: ncType.value } });
     closeNewCard();
     openDetail(r.card.id);
   } catch (err) { alert(err.message); }

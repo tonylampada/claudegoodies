@@ -1,6 +1,6 @@
 // card detail: attributes header + markdown body + event timeline (chat lives in the chat panel)
 import { S, card, cardStatus, cardActivityTs, kindEmoji, render, toggleFilter, filterSelected } from './state.js';
-import { esc, hhmm, ago, cardEmoji, ownerColor, cardPrs, prChipHtml, cardArtifacts } from './util.js';
+import { esc, hhmm, ago, cardEmoji, ownerColor, cardPrs, prChipHtml, cardArtifacts, uriBasename } from './util.js';
 import { md } from './md.js';
 import { api } from './api.js';
 import { labelChipHtml, labelColor, openLabelPicker, saveCardLabels } from './labels.js';
@@ -27,6 +27,7 @@ export function closeDetail() {
   const wasId = S.openCardId;
   S.openCardId = null;
   if (editingTitle) stopTitleEdit();
+  if (editingBody) stopBodyEdit();
   el.hidden = true;
   // Desktop: closing a card-synced detail returns the left chat to the main
   // conversation rather than stranding it on the just-closed card.
@@ -65,6 +66,7 @@ document.addEventListener('click', (e) => {
     t.closest('#notif-panel') ||
     t.closest('#settings-panel') ||
     t.closest('#label-picker') ||
+    t.closest('#av-overlay') ||               // artifact viewer sits above the detail
     t.closest('[data-label-add]')
   )) return;
   if (editingTitle) commitTitleEdit();        // save the in-progress rename first
@@ -121,6 +123,69 @@ titleInput.onkeydown = (e) => {
   else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); stopTitleEdit(); render(); }
 };
 titleInput.onblur = commitTitleEdit;
+
+// ---------- inline body (description) edit ----------
+// Mirrors the title editor: an editingBody flag guards re-render clobber while
+// the textarea is open; save persists through the same PATCH path as any body
+// update, and the SSE board push repaints the rendered markdown live.
+const bodyEl = document.getElementById('dt-body');
+const bodyEditBtn = document.getElementById('dt-body-edit');
+const bodyEditor = document.getElementById('dt-body-editor');
+const bodyInput = document.getElementById('dt-body-input');
+let editingBody = false;
+function startBodyEdit() {
+  const c = card(S.openCardId);
+  if (!c || editingBody) return;
+  editingBody = true;
+  bodyInput.value = c.body || '';
+  bodyEl.hidden = true;
+  bodyEditBtn.hidden = true;
+  bodyEditor.hidden = false;
+  bodyInput.focus();
+}
+function stopBodyEdit() {
+  editingBody = false;
+  bodyEditor.hidden = true;
+  bodyEl.hidden = false;
+  bodyEditBtn.hidden = false;
+}
+async function commitBodyEdit() {
+  if (!editingBody) return;
+  const c = card(S.openCardId);
+  const to = bodyInput.value;
+  stopBodyEdit();
+  if (!c || to === (c.body || '')) { render(); return; } // no-op
+  try { await api.patchCard(c.id, { body: to }); }
+  catch (e) { alert(e.message); render(); }
+}
+bodyEditBtn.onclick = startBodyEdit;
+document.getElementById('dt-body-save').onclick = commitBodyEdit;
+document.getElementById('dt-body-cancel').onclick = () => { stopBodyEdit(); render(); };
+bodyInput.onkeydown = (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commitBodyEdit(); }
+  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); stopBodyEdit(); render(); }
+};
+
+// ---------- artifact viewer (popup) ----------
+const avOverlay = document.getElementById('av-overlay');
+const avName = document.getElementById('av-name');
+const avBody = document.getElementById('av-body');
+async function openArtifact(uri) {
+  avName.textContent = uriBasename(uri) || uri;
+  avName.title = uri;
+  avBody.textContent = 'loading…';
+  avOverlay.hidden = false;
+  try {
+    const r = await api.artifact(uri);
+    avBody.textContent = r.content;
+  } catch (e) {
+    avBody.textContent = '⚠ no preview — ' + e.message; // binary / too large / unreadable
+  }
+}
+export function closeArtifact() { avOverlay.hidden = true; }
+export function artifactOpen() { return !avOverlay.hidden; }
+document.getElementById('av-close').onclick = closeArtifact;
+avOverlay.onclick = (e) => { if (e.target === avOverlay) closeArtifact(); };
 
 // Opening the card clears its unread: level-1 events and agent replies both
 // derive from the same per-card read marker server-side, so one POST covers
@@ -207,30 +272,25 @@ export function renderDetail() {
   add.onclick = () => openLabelPicker(c.id, add);
   labWrap.appendChild(add);
 
-  // body
-  document.getElementById('dt-body').innerHTML = md(c.body || '');
+  // body (don't clobber an in-progress description edit)
+  if (!editingBody) bodyEl.innerHTML = md(c.body || '');
 
-  // artifacts: attributes.artifacts [{uri, label}] — a simple label + uri list.
-  // file:// uris are not fetchable by the browser (server-side fetch/display is
-  // deferred), so those render as copy-on-click; http(s) uris open normally.
+  // artifacts: attributes.artifacts [{uri, label}] — shown by FILENAME, not the
+  // raw uri. http(s) uris open normally; anything else (file:// / local paths)
+  // opens in the artifact viewer popup, served by GET /api/artifact.
   const artEl = document.getElementById('dt-artifacts');
   const arts = cardArtifacts(c);
   artEl.innerHTML = !arts.length ? '' :
     '<div class="dt-arts-head">artifacts</div>' + arts.map((a) => {
-      const label = '<span class="a-label">' + esc(a.label || a.uri) + '</span>';
+      const name = uriBasename(a.uri) || a.uri;
+      const label = '<span class="a-label">' + esc(a.label || name) + '</span>';
       const uri = /^https?:\/\//.test(a.uri)
-        ? '<a class="a-uri" href="' + esc(a.uri) + '" target="_blank" rel="noopener">' + esc(a.uri) + '</a>'
-        : '<code class="a-uri" data-copy="' + esc(a.uri) + '" title="click to copy">' + esc(a.uri) + '</code>';
+        ? '<a class="a-uri" href="' + esc(a.uri) + '" target="_blank" rel="noopener" title="' + esc(a.uri) + '">' + esc(name) + '</a>'
+        : '<code class="a-uri" data-view="' + esc(a.uri) + '" title="' + esc(a.uri) + ' — click to view">' + esc(name) + '</code>';
       return '<div class="art">' + label + uri + '</div>';
     }).join('');
-  artEl.querySelectorAll('.a-uri[data-copy]').forEach((n) => {
-    n.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(n.dataset.copy);
-        n.classList.add('copied');
-        setTimeout(() => n.classList.remove('copied'), 1200);
-      } catch (e) {}
-    };
+  artEl.querySelectorAll('.a-uri[data-view]').forEach((n) => {
+    n.onclick = () => openArtifact(n.dataset.view);
   });
 
   // event timeline (newest first)
