@@ -138,7 +138,7 @@ function chunkText(s) {
 }
 function playNext(gen) {
   if (gen !== speakGen) return;             // a newer message superseded this one
-  if (!speakQueue.length) { stopKeepalive(); return; }
+  if (!speakQueue.length) { stopKeepalive(); speakingBubble.hide(); return; } // message done
   const u = utter(speakQueue[0]);
   u.onend = () => { if (gen !== speakGen) return; speakQueue.shift(); retriedChunk = false; playNext(gen); };
   u.onerror = () => {
@@ -162,7 +162,49 @@ export function speak(text) {
 export function stopSpeaking() {
   speakGen++; speakQueue = []; stopKeepalive();
   try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
+  speakingBubble.hide();
 }
+
+// ---------- floating "speaking" indicator ----------
+// A small fixed bubble shown ONLY while TTS is actually producing speech. It is
+// driven by the engine state (speechSynthesis.speaking/pending) rather than a
+// single utterance, so it correctly spans the whole message across its queued
+// sentence chunks and hides on natural end, error, or cancel. show() is called
+// when a speak session begins (speakPlain); the poll is the robust hide — it only
+// hides once it has actually observed speech (so the cancel()->speak() startup gap
+// never hides it early), and a grace window covers a message that never starts.
+// Clicking the bubble cancels all speech immediately.
+const speakingBubble = (() => {
+  let el = null, poll = null, sawSpeech = false, misses = 0, giveUp = 0;
+  function ensureEl() {
+    if (el) return el;
+    el = document.createElement('button');
+    el.id = 'tts-bubble';
+    el.type = 'button';
+    el.title = 'click to stop speaking';
+    el.setAttribute('aria-label', 'stop speaking');
+    el.hidden = true;
+    el.innerHTML = '<span class="wave"><i></i><i></i><i></i><i></i></span><span class="lbl">speaking…</span>';
+    el.onclick = () => stopSpeaking();
+    document.body.appendChild(el);
+    return el;
+  }
+  function stopPoll() { if (poll) { clearInterval(poll); poll = null; } }
+  function hide() { stopPoll(); sawSpeech = false; misses = 0; if (el) el.hidden = true; }
+  function show() {
+    if (!window.speechSynthesis) return;
+    ensureEl().hidden = false;
+    sawSpeech = false; misses = 0; giveUp = Date.now() + 3500;
+    if (poll) return; // already watching this speak session
+    poll = setInterval(() => {
+      const active = !!(window.speechSynthesis && (speechSynthesis.speaking || speechSynthesis.pending));
+      if (active) { sawSpeech = true; misses = 0; return; }
+      if (sawSpeech) { if (++misses >= 2) hide(); }   // spoke, now idle for two ticks -> done
+      else if (Date.now() > giveUp) hide();           // never started within the grace window
+    }, 250);
+  }
+  return { show, hide };
+})();
 function stripForSpeech(text) {
   return stripEmoji(text.replace(/```[\s\S]*?```/g, ' code ').replace(/[`*#\[\]()]/g, ' ').replace(/https?:\S+/g, ' link '));
 }
@@ -173,6 +215,7 @@ function speakPlain(plain) {
   retriedChunk = false;
   try { speechSynthesis.cancel(); } catch (e) {} // clear anything in flight / a wedged queue
   startKeepalive();
+  speakingBubble.show();                      // floating indicator up for this speak session
   setTimeout(() => playNext(gen), 60);       // let cancel() settle before speak() (Chrome quirk)
 }
 // Manual, on-demand speak for a single message. Independent of the auto-speak

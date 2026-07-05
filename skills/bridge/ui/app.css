@@ -497,6 +497,27 @@ a.a-uri { color: var(--accent); }
    so .md block styles (from the shared markdown section) apply as on a card body */
 #av-body.md { font-family: var(--sans); font-size: 15px; white-space: normal; }
 
+/* ---------- TTS speaking indicator ---------- */
+#tts-bubble {
+  position: fixed; right: 16px; bottom: 16px; z-index: 88;
+  display: inline-flex; align-items: center; gap: 9px; padding: 8px 14px;
+  border-radius: 999px; background: var(--panel2); border: 1px solid var(--accent2);
+  color: var(--accent); box-shadow: var(--shadow); font-size: 12px; font-weight: 600;
+  cursor: pointer; animation: pop-in .16s ease-out; transition: background .15s, color .15s;
+}
+#tts-bubble:hover { background: var(--panel3); color: var(--text); }
+/* sound-wave bars — gentle staggered pulse, drawn in the current text color */
+#tts-bubble .wave { display: inline-flex; align-items: center; gap: 2px; height: 15px; }
+#tts-bubble .wave i {
+  width: 3px; height: 100%; border-radius: 2px; background: currentColor;
+  transform: scaleY(.35); animation: tts-wave 1s ease-in-out infinite;
+}
+#tts-bubble .wave i:nth-child(2) { animation-delay: .15s; }
+#tts-bubble .wave i:nth-child(3) { animation-delay: .3s; }
+#tts-bubble .wave i:nth-child(4) { animation-delay: .45s; }
+@keyframes tts-wave { 0%, 100% { transform: scaleY(.35); opacity: .6; } 50% { transform: scaleY(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { #tts-bubble .wave i { animation: none; transform: scaleY(.7); } }
+
 /* ---------- mobile ---------- */
 @media (max-width: 760px) {
   /* the notch: pad the header top by the safe-area inset so controls clear it */
@@ -534,6 +555,8 @@ a.a-uri { color: var(--accent); }
   .attr .v { max-width: 150px; }
   #notif-panel { top: 48px; }
   #settings-panel { top: 48px; }
+  /* sit above the bottom tab bar + home-indicator inset */
+  #tts-bubble { right: 12px; bottom: calc(60px + env(safe-area-inset-bottom)); }
 }
 @media (hover: none) {
   .tile:hover { transform: none; box-shadow: none; }
