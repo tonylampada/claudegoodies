@@ -191,6 +191,43 @@ test('archive reason is the validated merged|killed enum; free text rides only a
   }
 });
 
+test('card.activity reflects last real activity, not incidental status/patch writes', async () => {
+  const s = await startServerWithColumns();
+  const activity = async (id) => (await s.api('GET', '/api/cards/' + id)).body.activity;
+  try {
+    await s.api('POST', '/api/cards', { title: 'Task' }); // pushes a created event
+    const t0 = await activity('task');
+    assert.ok(t0, 'activity is present and derived from the created event');
+
+    // A status-lease refresh bumps the mutable `updated` but is NOT real activity.
+    await new Promise((r) => setTimeout(r, 5));
+    let r = await s.api('POST', '/api/cards/task/status', { worker: { id: 'w1', state: 'working' } });
+    assert.strictEqual(r.status, 200);
+    const afterStatus = await s.api('GET', '/api/cards/task');
+    assert.strictEqual(afterStatus.body.activity, t0, 'status.set does not advance activity');
+    assert.notStrictEqual(afterStatus.body.updated, t0, 'but updated IS bumped (unchanged semantics)');
+
+    // An attribute patch (the feeder's periodic sync) likewise is not real activity.
+    await new Promise((r) => setTimeout(r, 5));
+    await s.api('PATCH', '/api/cards/task', { attributes: { owner: 'alice' } });
+    assert.strictEqual(await activity('task'), t0, 'attribute patch does not advance activity');
+
+    // A genuine event DOES advance it.
+    await new Promise((r) => setTimeout(r, 5));
+    r = await s.api('POST', '/api/cards/task/events', { text: 'did a thing' });
+    assert.strictEqual(r.status, 200);
+    const t1 = await activity('task');
+    assert.ok(t1 > t0, 'a real event advances activity');
+
+    // As does a chat message on the card thread.
+    await new Promise((r) => setTimeout(r, 5));
+    await s.api('POST', '/api/feedback', { target: 'card:task', text: 'hi' });
+    assert.ok((await activity('task')) > t1, 'a thread message advances activity');
+  } finally {
+    await s.stop();
+  }
+});
+
 test('user-created card queues card-created feedback; agent-created card does not', async () => {
   const s = await startServerWithColumns();
   try {

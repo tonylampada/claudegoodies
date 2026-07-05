@@ -47,6 +47,12 @@ export function cardActivityTs(c) {
   return ts;
 }
 
+// A card's last-real-activity timestamp, for display and column sort. The server
+// derives `activity` (max of the card's real event/thread timestamps) so incidental
+// writes — a status-lease refresh/decay, a feeder attribute sync — no longer read as
+// "now". Fall back to the mutable `updated` for any older cached doc without it.
+export function cardRecency(c) { return (c && (c.activity || c.updated)) || ''; }
+
 // ---------- status (card.status is the single source; no other status feed) ----------
 export function cardStatus(c) {
   return (c && c.status) || { worker: { id: null, state: 'absent' }, owed: false, unread: false };
@@ -160,7 +166,7 @@ export function cardVisible(c) {
   const q = S.filters.text.trim().toLowerCase();
   if (q && !haystack(c).includes(q)) return false;
   const cutoff = ageCutoff();
-  if (cutoff && (!c.updated || new Date(c.updated).getTime() < cutoff)) return false;
+  if (cutoff) { const t = cardRecency(c); if (!t || new Date(t).getTime() < cutoff) return false; }
   for (const f of S.filters.sel) {
     if (f.kind === 'owner') { if (((c.attributes || {}).owner || '') !== f.value) return false; }
     else if (!(c.labels || []).includes(f.value)) return false;

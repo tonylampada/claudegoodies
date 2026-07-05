@@ -293,11 +293,24 @@ function cardStatus(card, user) {
   if (!unread) for (const e of card.events || []) if (e.level === 1 && Date.parse(e.ts) > readMs) { unread = true; break; }
   return { worker: derivedWorker(card), owed, unread };
 }
-// Serialization view: cards go out with the derived `status` attached; the
-// stored board keeps only the raw lease. `card.status` is the single READ source
-// for worker/owed/unread — nothing is mirrored into attributes.
+// Last REAL activity on a card, derived (never persisted). A card's mutable
+// `updated` is bumped by incidental/system writes too — a status-lease refresh or
+// decay (status.set) and any attribute patch (the feeder's periodic sync) — so it
+// reads "now" for cards nothing meaningful happened to. Real activity always lands
+// as an event (created/moved/handoff/…) or a thread message, so the max of those
+// timestamps (floored at `created`) reflects genuine activity and ignores the
+// bookkeeping writes. The UI shows and sorts on this, not `updated`.
+function cardActivity(card) {
+  let ts = card.created || card.updated || '';
+  for (const e of card.events || []) if (e.ts && e.ts > ts) ts = e.ts;
+  for (const m of card.thread || []) if (m.ts && m.ts > ts) ts = m.ts;
+  return ts;
+}
+// Serialization view: cards go out with the derived `status` and `activity`
+// attached; the stored board keeps only the raw lease. `card.status` is the single
+// READ source for worker/owed/unread — nothing is mirrored into attributes.
 function publicCard(card, user) {
-  return Object.assign({}, card, { status: cardStatus(card, user) });
+  return Object.assign({}, card, { status: cardStatus(card, user), activity: cardActivity(card) });
 }
 // The served board carries the EFFECTIVE kinds map (built-ins merged under the
 // registered entries); the stored board keeps only the registered map.

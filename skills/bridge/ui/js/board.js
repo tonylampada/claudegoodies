@@ -1,5 +1,5 @@
 // board: columns of dense tiles, drag&drop, long-press move menu, new-card modal
-import { S, columns, cards, cardVisible, cardStatus, targetOwedStale, toggleFilter, filterSelected, render } from './state.js';
+import { S, columns, cards, cardVisible, cardStatus, cardRecency, targetOwedStale, toggleFilter, filterSelected, render } from './state.js';
 import { api } from './api.js';
 import { esc, ago, cardEmoji, ownerColor, cardPrs, prChipHtml } from './util.js';
 import { labelChipHtml } from './labels.js';
@@ -8,7 +8,7 @@ import { openDetail } from './detail.js';
 const boardEl = document.getElementById('board');
 
 function byRecency(a, b) {
-  return (new Date(b.updated || 0).getTime() || 0) - (new Date(a.updated || 0).getTime() || 0);
+  return (new Date(cardRecency(b) || 0).getTime() || 0) - (new Date(cardRecency(a) || 0).getTime() || 0);
 }
 
 function tileHtml(c) {
@@ -54,7 +54,7 @@ function tileHtml(c) {
     '<span class="grow"></span>' +
     (hasLink ? '<span class="t-ind" title="has link">📎</span>' : '') +
     (msgs ? '<span class="t-ind" title="' + msgs + ' messages">💬' + msgs + '</span>' : '') +
-    '<span class="t-ago">' + ago(c.updated) + '</span>' +
+    '<span class="t-ago">' + ago(cardRecency(c)) + '</span>' +
     '</div></div>';
 }
 

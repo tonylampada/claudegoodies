@@ -1,5 +1,5 @@
 // card detail: attributes header + markdown body + event timeline (chat lives in the chat panel)
-import { S, card, cardStatus, cardActivityTs, kindEmoji, render, toggleFilter, filterSelected } from './state.js';
+import { S, card, cardStatus, cardActivityTs, cardRecency, kindEmoji, render, toggleFilter, filterSelected } from './state.js';
 import { esc, hhmm, ago, cardEmoji, ownerColor, cardPrs, prChipHtml, cardArtifacts, uriBasename } from './util.js';
 import { md } from './md.js';
 import { api } from './api.js';
@@ -237,7 +237,7 @@ export function renderDetail() {
   const w = cardStatus(c).worker;
   const worker = w && w.id && WORKER_STATES[w.state] ? w : null;
   document.getElementById('dt-sub').innerHTML =
-    esc(c.id + ' · created ' + ago(c.created) + ' ago · updated ' + ago(c.updated) + ' ago') +
+    esc(c.id + ' · created ' + ago(c.created) + ' ago · updated ' + ago(cardRecency(c)) + ' ago') +
     (worker ? '<span class="dt-worker dt-worker-' + worker.state + '" title="worker: ' + esc(worker.state) + '">' + esc(worker.id) + '</span>' : '');
 
   // attributes header (emoji shown up top already; owner gets its color).
