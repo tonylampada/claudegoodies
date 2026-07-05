@@ -14,6 +14,7 @@ function byRecency(a, b) {
 function tileHtml(c) {
   const at = c.attributes || {};
   const owner = at.owner || '';
+  const repo = at.repo || '';
   const msgs = (c.thread || []).length;
   const st = cardStatus(c);
   // "agent owes you a reply" balloon: SAME source as the chat typing bubble
@@ -51,6 +52,7 @@ function tileHtml(c) {
     '<div class="t-foot">' +
     (owner ? '<span class="t-owner' + (filterSelected('owner', owner) ? ' active' : '') + '" data-owner="' + esc(owner) +
       '" title="filter by owner"><span class="dot" style="background:' + ownerColor(owner) + '"></span>' + esc(owner) + '</span>' : '') +
+    (repo ? '<span class="t-repo" title="repo">' + esc(repo) + '</span>' : '') +
     '<span class="grow"></span>' +
     (hasLink ? '<span class="t-ind" title="has link">📎</span>' : '') +
     (msgs ? '<span class="t-ind" title="' + msgs + ' messages">💬' + msgs + '</span>' : '') +

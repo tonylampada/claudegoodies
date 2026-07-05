@@ -213,6 +213,7 @@ input, textarea, select { font: inherit; color: var(--text); }
 .tile .t-owner { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile .t-owner:hover, .tile .t-owner.active { color: var(--text); }
 .tile .t-owner .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.tile .t-repo { max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile .t-ago { font-family: var(--mono); font-size: 11px; }
 .tile .t-ind { display: inline-flex; align-items: center; gap: 1px; }
 .tile .t-unread { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; box-shadow: 0 0 6px var(--accent); }
