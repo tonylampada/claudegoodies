@@ -220,10 +220,10 @@ function speakPlain(plain) {
 }
 // Manual, on-demand speak for a single message. Independent of the auto-speak
 // toggle: this call happens inside a real user gesture (the speak-button click),
-// so it runs the SAME proven unlock+speak routine the test button uses and works
-// even on iOS where SSE-driven auto-speak is gesture-locked. Returns true if it
-// spoke, false if there was nothing to say / no engine. Clicking again while this
-// message is speaking stops it (cheap toggle).
+// so the speak() it fires is itself the gesture that unlocks speechSynthesis — no
+// separate primer needed. Returns true if it spoke, false if there was nothing to
+// say / no engine. Clicking again while this message is speaking stops it (cheap
+// toggle).
 let manualSpeakingKey = null;
 export function speakMessage(text, key) {
   if (!window.speechSynthesis) return false;
@@ -232,7 +232,6 @@ export function speakMessage(text, key) {
   }
   const plain = stripForSpeech(text);
   if (!plain) return false;
-  primeVoice();                              // unlock in-gesture (no-op if already primed)
   manualSpeakingKey = key != null ? key : null;
   speakPlain(plain);
   return true;
@@ -245,42 +244,23 @@ function setVoiceOn(on) {
   if (!on) stopSpeaking(); // turning voice off silences anything mid-utterance
   try { if (on) localStorage.setItem(VOICE_ON_KEY, '1'); else localStorage.removeItem(VOICE_ON_KEY); } catch (e) {}
 }
-// speechSynthesis is gesture-gated: after load it stays muted until a genuine
-// user interaction speaks a REAL utterance. The voice-TEST button reliably
-// unlocks because it does exactly that; every unlock path runs the SAME routine —
-// cancel, resume, utter(), speak — in-gesture, differing only in the text and
-// whether it is audible. The gesture PRIMER must unlock without making any sound:
-// a REAL utterance still counts for the gesture gate (iOS included) even at
-// volume 0, so it is spoken silently. (An empty/whitespace string is unreliable —
-// some engines drop it and never fire, leaving the engine locked — so the primer
-// keeps real text but muted.) The test greeting is a deliberate click and stays
-// audible.
-let primed = false;
-function realUnlock(text, silent) {
+// No gesture-primer: nothing is ever spoken except real content and the
+// deliberate voice-test greeting. speechSynthesis is gesture-gated, but every
+// speak path already rides a genuine user gesture — a card's Speak button click
+// (speakMessage) and the voice-test button both call speak() inside the click, and
+// that real in-gesture utterance is itself the unlock. The voice-test button
+// speaks an audible greeting through this same routine.
+function realUnlock(text) {
   if (!window.speechSynthesis) return;
   try {
     speechSynthesis.cancel();
     speechSynthesis.resume();
-    const u = utter(text);
-    if (silent) u.volume = 0; // inaudible unlock: a REAL utterance, zero output
-    speechSynthesis.speak(u);
-    primed = true;
+    speechSynthesis.speak(utter(text));
   } catch (e) {}
 }
-function primeVoice() { if (!primed) realUnlock('.', true); } // truly silent (volume 0) REAL unlock
-// Fallback: unlock on the very first user gesture anywhere on the page.
-function firstGestureUnlock() {
-  primeVoice();
-  if (primed) for (const ev of ['pointerdown', 'keydown', 'touchend']) document.removeEventListener(ev, firstGestureUnlock);
-}
-for (const ev of ['pointerdown', 'keydown', 'touchend']) document.addEventListener(ev, firstGestureUnlock, { passive: true });
 
-voiceBtn.onclick = () => {
-  primeVoice(); // this click is a gesture — unlock so subsequent messages voice
-  setVoiceOn(!voiceOn);
-};
-try { if (localStorage.getItem(VOICE_ON_KEY) === '1') setVoiceOn(true); } catch (e) {} // restore toggle; unlock waits for a gesture
-// the test button is the proven unlock path; it just uses an audible greeting.
+voiceBtn.onclick = () => setVoiceOn(!voiceOn);
+try { if (localStorage.getItem(VOICE_ON_KEY) === '1') setVoiceOn(true); } catch (e) {} // restore toggle
 document.getElementById('voice-test').onclick = () => realUnlock('Hello, this is my voice.');
 
 // ---------- speak only NEW agent messages ----------
