@@ -338,6 +338,15 @@ function workerEvidence(stateDir, taskId, meta, statusLines) {
   if (!windowAlive(meta)) return null; // dead runtime window: no worker, unlink
   const verb = lastStatusVerb(statusLines);
   if (verb === 'needs-decision' || verb === 'blocked') return { id: taskId, state: 'needs-you' };
+  const active = activeBranches(meta);
+  const runActive = active.size > 0 && active.has(taskBranch(meta, taskId));
+  // Definitive finish: the crew reported a terminal verb AND no no-mistakes run
+  // is validating the branch. On-disk evidence says nobody is working, so decay
+  // to idle NOW instead of letting the freshness window hold the card green for
+  // the tail of FM_SYNC_FRESH_SECS. (If a run IS active, this is the
+  // crew-done-then-validation flow and the card must stay working — hence the
+  // !runActive guard.)
+  if ((verb === 'done' || verb === 'failed') && !runActive) return { id: taskId, state: 'idle' };
   const cutoff = Date.now() - FRESH_SECS * 1000;
   for (const f of [taskId + '.status', taskId + '.turn-ended']) {
     const m = mtimeMs(path.join(stateDir, f));
@@ -346,8 +355,7 @@ function workerEvidence(stateDir, taskId, meta, statusLines) {
   // Stale files are not proof of idleness: a silently-validating worker's
   // branch shows an actively-running no-mistakes run-step, and that DB
   // evidence keeps the lease working through the quiet stretch.
-  const active = activeBranches(meta);
-  if (active.size && active.has(taskBranch(meta, taskId))) return { id: taskId, state: 'working' };
+  if (runActive) return { id: taskId, state: 'working' };
   return { id: taskId, state: 'idle' }; // alive, no recent activity, no active run
 }
 

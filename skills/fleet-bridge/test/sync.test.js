@@ -118,6 +118,58 @@ test('run-step evidence: stale files but an actively-running validation keeps th
   }
 });
 
+test('terminal verb: fresh done + no active run -> idle immediately, no freshness-window lie', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app', 'kind=ship']);
+    // the terminal write itself is fresh (mtime < FRESH_SECS), but nobody is
+    // working: no run validating the branch -> the lease greys NOW
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing', 'done: PR opened']);
+
+    await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: '' });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'idle');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('terminal verb: fresh done + validation running on the branch -> stays working', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app', 'kind=ship']);
+    // crew-done-then-validation flow: last verb is done but the branch (ship
+    // convention fm/<id>) has an active no-mistakes run -> no idle decay
+    fx.writeStatus(home, 'fix-widget-a1', ['done: implementation ready']);
+
+    await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: 'fm/fix-widget-a1' });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'working');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('terminal verb: fresh failed + no active run -> idle immediately', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app', 'kind=ship']);
+    fx.writeStatus(home, 'fix-widget-a1', ['failed: repro never converged']);
+
+    await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: '' });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'idle');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
 test('run-step evidence: no-mistakes unavailable -> graceful idle, never fatal', async () => {
   const s = await startServer();
   const home = fx.makeHome();
