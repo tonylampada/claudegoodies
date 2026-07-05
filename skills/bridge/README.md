@@ -5,7 +5,8 @@ CLI. An AI agent feeds cards, events, and chat; a human follows along live and s
 See `SKILL.md` for the agent-facing guide; this file documents the HTTP API.
 
 ```
-server.js       the server (node server.js --port 4777 --board default --host 0.0.0.0)
+server.js       the server (node server.js --port 4777 --board default; bind host:
+                --host > "host" in ~/.bridge/config.json > 127.0.0.1)
 bridge-axi      agent CLI (run with no args for usage)
 ui/             static UI (index.html + app.css + js/ ES modules), served by the server
 migrate-v1.js   one-shot v1 → v2 board converter

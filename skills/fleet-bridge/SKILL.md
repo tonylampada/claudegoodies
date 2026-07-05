@@ -18,16 +18,18 @@ automated — you are the only gear that cannot be. Model:
 
 ## Setup
 
-- The user installs both skills, by name (`bridge`, `fleet-bridge`). Never reference the
-  bridge by repository path; `bridge-axi` lives in the installed bridge skill's dir
-  (e.g. `~/.claude/skills/bridge/bridge-axi`).
-- Always `--board fleet`. Port 4777, binds 0.0.0.0 (reachable from the captain's other
-  devices). State: `~/.bridge/boards/fleet.json`; archive: `fleet.archive.jsonl`.
+- The user installs both skills, by name (`bridge`, `fleet-bridge`). `bridge-axi` lives
+  in the installed bridge skill's dir (e.g. `~/.claude/skills/bridge/bridge-axi`).
+- One server hosts many boards; every call names one via `--board`. The fleet uses a
+  single board — named `fleet` in every example here. Port 4777. State:
+  `~/.bridge/boards/fleet.json`; archive: `fleet.archive.jsonl`.
+- Network exposure is the user's machine-private config (`"host"` in
+  `~/.bridge/config.json`), default localhost-only. Never set or document a bind host
+  yourself.
 - Server startup is by captain's order only, never automatic. The order:
   **"Captain on the bridge"** (or any clear ask for the board). Then:
-  `bridge-axi open --board fleet --host 0.0.0.0` (idempotent, prints URL) → arm the poll
-  and run the sync → hand him the URL, nothing else. A board already running stays
-  running.
+  `bridge-axi open --board fleet` (idempotent, prints URL) → arm the poll and run the
+  sync → hand him the URL, nothing else. A board already running stays running.
 
 ## The feeder's lane — never hand-do these
 

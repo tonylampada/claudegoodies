@@ -22,7 +22,7 @@ function die(msg) { console.error(msg); process.exit(1); }
 const argv = process.argv.slice(2);
 const cmd = argv.shift();
 const opts = {
-  port: 4777, board: 'default', host: '0.0.0.0',
+  port: 4777, board: 'default', host: '',
   textFile: null, bodyFile: null, title: null, column: null, id: null,
   level: null, kind: null, actor: null, reason: null, note: null, attrs: [], labels: [], json: false,
   worker: null, ttl: null,
@@ -101,7 +101,9 @@ function hhmm(iso) { try { return new Date(iso).toISOString().slice(5, 16).repla
 async function cmdOpen() {
   let st = await serverUp();
   if (!st) {
-    const child = spawn(process.execPath, [SERVER_JS, '--port', String(opts.port), '--board', opts.board, '--host', opts.host], {
+    const args = [SERVER_JS, '--port', String(opts.port), '--board', opts.board];
+    if (opts.host) args.push('--host', opts.host); // else server resolves: config.json "host" > 127.0.0.1
+    const child = spawn(process.execPath, args, {
       detached: true, stdio: 'ignore',
     });
     child.unref();
@@ -384,7 +386,9 @@ const commands = {
 if (!commands[cmd]) {
   die('bridge-axi — agent CLI for the bridge board. All commands take [--port N] [--board NAME].\n' +
     '\nserver:\n' +
-    '  open [--host H]                        start server if needed (idempotent), print URL\n' +
+    '  open [--host H]                        start server if needed (idempotent), print URL.\n' +
+    '                                         Bind host: --host > "host" in ~/.bridge/config.json\n' +
+    '                                         > 127.0.0.1 (localhost-only default)\n' +
     '  status                                 up/down, board, card count, pending feedback\n' +
     '  stop                                   stop the server\n' +
     '\nstatus (the ONE work signal; worker is a lease, owed/unread are server-derived):\n' +

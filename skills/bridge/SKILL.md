@@ -65,8 +65,10 @@ any agent with shell access can drive it.
 ## Agent loop
 
 1. `bridge-axi open` — start the server if needed (idempotent), print the URL once.
-   Binds `0.0.0.0` by default so phones on the LAN can open `http://<machine>:<port>/`;
-   pass `--host 127.0.0.1` to restrict.
+   Binds `127.0.0.1` by default (localhost-only). To reach the board from other devices,
+   the user sets `"host"` in `~/.bridge/config.json` (e.g. a VPN/tailnet interface IP) —
+   machine-private config, never baked into commands or docs; `--host` overrides for one
+   run. A non-loopback bind also listens on `127.0.0.1` so local CLI calls keep working.
 2. Feed reality: `create` new cards, `patch` bodies/attributes as state evolves, `event`
    for timeline signals (level 1 only for things the human must see), `move` for real
    state transitions (an agent move defaults to a `handoff` that notifies; pass

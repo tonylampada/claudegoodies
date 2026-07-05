@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // bridge server — generic agent board. Node built-ins only, zero deps.
-// Usage: node server.js --port 4777 --board default --host 0.0.0.0
+// Usage: node server.js --port 4777 --board default [--host H]
+// Bind host: --host flag > "host" in ~/.bridge/config.json > 127.0.0.1 (localhost-only).
+// A non-loopback bind also listens on 127.0.0.1 so local CLI calls keep working.
 //
 // Data model v2 (one JSON file per board, ~/.bridge/boards/<name>.json):
 //   board = { title, subtitle, updated, seq,
@@ -35,14 +37,14 @@ const os = require('os');
 
 // ---------- args ----------
 function parseArgs(argv) {
-  const o = { port: 4777, board: 'default', host: '0.0.0.0' };
+  const o = { port: 4777, board: 'default', host: '' };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--port') o.port = parseInt(argv[++i], 10);
     else if (argv[i] === '--board') o.board = argv[++i];
     else if (argv[i] === '--host') o.host = argv[++i];
   }
   if (!Number.isInteger(o.port) || o.port <= 0) { console.error('bad --port'); process.exit(1); }
-  if (!o.host) { console.error('bad --host'); process.exit(1); }
+  if (o.host && !/^[\w.:-]+$/.test(o.host)) { console.error('bad --host'); process.exit(1); }
   if (!/^[\w.-]+$/.test(o.board)) { console.error('bad --board (use [A-Za-z0-9_.-])'); process.exit(1); }
   return o;
 }
@@ -71,6 +73,18 @@ function userConfig() {
   } catch (e) {}
   return { voices: null };
 }
+
+// Bind host is machine-private config, never baked into callers:
+// --host flag > "host" in config.json > 127.0.0.1.
+function configHost() {
+  try {
+    const c = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    if (c && typeof c === 'object' && typeof c.host === 'string' && /^[\w.:-]+$/.test(c.host.trim())) return c.host.trim();
+  } catch (e) {}
+  return '';
+}
+const LOOPBACKS = ['127.0.0.1', 'localhost', '::1'];
+const BIND_HOST = opts.host || configHost() || '127.0.0.1';
 
 // ---------- pidfile: single instance per port ----------
 function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } }
@@ -856,6 +870,12 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.on('error', (e) => { console.error('server error: ' + e.message); cleanup(); process.exit(1); });
-server.listen(opts.port, opts.host, () => {
-  console.log('bridge server up: http://localhost:' + opts.port + '/ host=' + opts.host + ' board=' + opts.board + ' pid=' + process.pid);
+server.listen(opts.port, BIND_HOST, () => {
+  console.log('bridge server up: http://localhost:' + opts.port + '/ host=' + BIND_HOST + ' board=' + opts.board + ' pid=' + process.pid);
 });
+// Non-loopback bind: also listen on loopback so local CLI/UI keep working.
+if (!LOOPBACKS.includes(BIND_HOST) && BIND_HOST !== '0.0.0.0') {
+  const local = http.createServer(server.listeners('request')[0]);
+  local.on('error', (e) => { console.error('loopback listener error: ' + e.message); });
+  local.listen(opts.port, '127.0.0.1');
+}
