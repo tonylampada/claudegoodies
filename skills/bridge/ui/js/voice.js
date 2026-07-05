@@ -247,23 +247,27 @@ function setVoiceOn(on) {
 }
 // speechSynthesis is gesture-gated: after load it stays muted until a genuine
 // user interaction speaks a REAL utterance. The voice-TEST button reliably
-// unlocks because it does exactly that; a silent/volume-0 primer does NOT count
-// on iOS Safari, so the engine stayed half-locked and SSE-driven messages (not
-// in a gesture) failed until the test button was pressed. So every unlock path
-// runs the SAME routine the test button uses — cancel, resume, utter(), speak at
-// full volume — differing only in the text. The primer speaks a lone "." which
-// engines voice as (essentially) nothing, but iOS still accepts it as real.
+// unlocks because it does exactly that; every unlock path runs the SAME routine —
+// cancel, resume, utter(), speak — in-gesture, differing only in the text and
+// whether it is audible. The gesture PRIMER must unlock without making any sound:
+// a REAL utterance still counts for the gesture gate (iOS included) even at
+// volume 0, so it is spoken silently. (An empty/whitespace string is unreliable —
+// some engines drop it and never fire, leaving the engine locked — so the primer
+// keeps real text but muted.) The test greeting is a deliberate click and stays
+// audible.
 let primed = false;
-function realUnlock(text) {
+function realUnlock(text, silent) {
   if (!window.speechSynthesis) return;
   try {
     speechSynthesis.cancel();
     speechSynthesis.resume();
-    speechSynthesis.speak(utter(text)); // real, non-empty, full-volume utterance in-gesture
+    const u = utter(text);
+    if (silent) u.volume = 0; // inaudible unlock: a REAL utterance, zero output
+    speechSynthesis.speak(u);
     primed = true;
   } catch (e) {}
 }
-function primeVoice() { if (!primed) realUnlock('.'); } // near-silent but REAL unlock
+function primeVoice() { if (!primed) realUnlock('.', true); } // truly silent (volume 0) REAL unlock
 // Fallback: unlock on the very first user gesture anywhere on the page.
 function firstGestureUnlock() {
   primeVoice();
