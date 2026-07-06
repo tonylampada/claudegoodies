@@ -48,9 +48,11 @@ document.getElementById('dt-close').onclick = closeDetail;
 // Excluded from "outside": the left chat pane (#chat — on desktop it shows the
 // selected card's own thread, so it's part of the card context, not outside),
 // a .tile (its own handler switches to that card's detail — a switch, not a
-// close) and the transient popovers (move menu, label picker, notif/settings
-// panels) so dismissing one of those never also closes the detail. Net effect:
-// only a click on the BOARD area (columns / empty space) closes via click-outside.
+// close), the transient popovers (move menu, label picker, notif/settings
+// panels) so dismissing one of those never also closes the detail, and the
+// floating stop-speaking bubble (stopping TTS is not a navigation intent). Net
+// effect: only a click on the BOARD area (columns / empty space) closes via
+// click-outside.
 // If a rename is in progress, commit it (like Enter/blur) before
 // closing rather than discarding it: commitTitleEdit reads card(S.openCardId) so
 // it must run before closeDetail nulls it, and it clears editingTitle so
@@ -67,6 +69,7 @@ document.addEventListener('click', (e) => {
     t.closest('#settings-panel') ||
     t.closest('#label-picker') ||
     t.closest('#av-overlay') ||               // artifact viewer sits above the detail
+    t.closest('#tts-bubble') ||               // floating stop-speaking control
     t.closest('[data-label-add]')
   )) return;
   if (editingTitle) commitTitleEdit();        // save the in-progress rename first
