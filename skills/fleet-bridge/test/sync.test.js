@@ -118,6 +118,79 @@ test('run-step evidence: stale files but an actively-running validation keeps th
   }
 });
 
+test('provably-working evidence: stale files + no active run but reader says working -> lease working', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app', 'kind=ship']);
+    // last status is a non-terminal working note, but stale — and no branch in
+    // the coarse runs list. Files alone would decay the card to idle.
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing']);
+    fx.backdate(path.join(home, 'state', 'fix-widget-a1.status'), 3600);
+
+    // the home's reconciled reader reports the worker provably working (busy
+    // pane mid-turn, or a run-step the coarse list missed) -> lease stays working
+    await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: '', FM_SYNC_PROVABLY_WORKING: 'fix-widget-a1' });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'working');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('provably-working evidence: stale files + no active run + no evidence -> idle (unchanged)', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app', 'kind=ship']);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing']);
+    fx.backdate(path.join(home, 'state', 'fix-widget-a1.status'), 3600);
+
+    // reader reports nothing provably working -> old behavior: idle
+    await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: '', FM_SYNC_PROVABLY_WORKING: '' });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'idle');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('provably-working evidence: needs-decision still outranks a working reader', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app', 'kind=ship']);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: setup', 'needs-decision: pick auth provider']);
+
+    // even with the reader claiming working, a needs-decision verb wins
+    await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: '', FM_SYNC_PROVABLY_WORKING: 'fix-widget-a1' });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'needs-you');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
+test('provably-working evidence: terminal done + no run stays idle even if the reader says working', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app', 'kind=ship']);
+    // a definitive finish: the terminal-verb decay must win over pane evidence
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing', 'done: PR opened']);
+
+    await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: '', FM_SYNC_PROVABLY_WORKING: 'fix-widget-a1' });
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'idle');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
 test('terminal verb: fresh done + no active run -> idle immediately, no freshness-window lie', async () => {
   const s = await startServer();
   const home = fx.makeHome();

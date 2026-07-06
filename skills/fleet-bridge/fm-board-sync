@@ -60,6 +60,11 @@
 //        - else the task branch's no-mistakes run-step is actively running
 //          (a silent validation step writes no status line and fires no
 //          turn-end for 20+ minutes; the run DB is evidence too) -> working
+//        - else the home's own reconciled reader (bin/fm-crew-state.sh via
+//          crew_is_provably_working) reports the worker working from run-step
+//          or a busy pane — a worker mid-turn on a long silent step, or a
+//          validation the coarse runs list missed — read-only, bounded, and
+//          skipped gracefully on an older home lacking the script -> working
 //        - else task meta still exists -> idle
 //        - task meta gone (torn down) -> one status.set with worker null (the
 //          unlink), then stop asserting
@@ -322,18 +327,64 @@ function taskBranch(meta, taskId) {
   return 'fm/' + taskId;
 }
 
+// ---------- reconciled run-step + busy-pane evidence (home's own reader) ----------
+// activeBranches() above only catches a branch whose most recent `no-mistakes
+// runs` row reads "running". Two live-but-quiet cases still slip past it and
+// wrongly grey a card: a worker mid-turn on a long silent step that has written
+// no status line yet (its terminal shows the harness busy signature, e.g.
+// claude's "esc to interrupt"), and a validation whose run-step attribution the
+// coarse runs list missed. The firstmate home itself already reconciles exactly
+// this — run-step > pane > status log — in bin/fm-crew-state.sh, and
+// bin/fm-classify-lib.sh's crew_is_provably_working returns success ONLY when
+// that reader reports state working from source run-step OR pane (never a stale
+// status-log line). Reusing that primitive covers both cases without
+// duplicating its logic, and stays read-only (fm-crew-state.sh is side-effect
+// free). Bounded and non-fatal: one `bash -c` per otherwise-idle task per run,
+// wrapped in a timeout; version skew (an older home lacking the script) or any
+// error/timeout => not provably working, i.e. today's behavior unchanged.
+// FM_SYNC_PROVABLY_WORKING (space/comma-separated task ids, may be empty)
+// overrides the real call for tests, like FM_SYNC_ACTIVE_BRANCHES /
+// FM_SYNC_LIVE_WINDOWS.
+const PROVABLY_TIMEOUT_MS = 15000;
+let provablyWorkingOverride = null;
+const provablyWorkingCache = new Map(); // home\0taskId -> bool (one decision per run)
+function provablyWorking(home, taskId) {
+  const env = process.env.FM_SYNC_PROVABLY_WORKING;
+  if (env !== undefined) {
+    if (!provablyWorkingOverride) provablyWorkingOverride = new Set(env.split(/[\s,]+/).filter(Boolean));
+    return provablyWorkingOverride.has(taskId);
+  }
+  const key = home + '\0' + taskId;
+  if (provablyWorkingCache.has(key)) return provablyWorkingCache.get(key);
+  let ok = false;
+  const lib = path.join(home, 'bin', 'fm-classify-lib.sh');
+  if (fs.existsSync(lib)) {
+    try {
+      // exit 0 = the home's reconciled reader says working via run-step or pane;
+      // a missing crew_is_provably_working (older home), non-zero verdict, or a
+      // timeout all throw here and leave ok = false.
+      execFileSync('bash', ['-c', '. "$1"; crew_is_provably_working "$2"', 'bash', lib, taskId],
+        { cwd: home, env: Object.assign({}, process.env, { FM_HOME: home }),
+          stdio: ['ignore', 'ignore', 'ignore'], timeout: PROVABLY_TIMEOUT_MS });
+      ok = true;
+    } catch (e) { ok = false; }
+  }
+  provablyWorkingCache.set(key, ok);
+  return ok;
+}
+
 // ---------- worker lease evidence ----------
 // The lease is derived from on-disk EVIDENCE only — status lines, turn-end
-// activity, and the no-mistakes run DB — never from screen/pane sampling.
-// Returns {id, state} for a live task, or null for a torn-down one (meta
-// gone) or a dead runtime window (worker gone while the meta lingers): both
-// unlink.
+// activity, the no-mistakes run DB, and the home's reconciled run-step/pane
+// reader — never from screen/pane sampling done here. Returns {id, state} for a
+// live task, or null for a torn-down one (meta gone) or a dead runtime window
+// (worker gone while the meta lingers): both unlink.
 function lastStatusVerb(statusLines) {
   if (!statusLines.length) return null;
   const line = statusLines[statusLines.length - 1];
   return line.split(':')[0].trim().toLowerCase();
 }
-function workerEvidence(stateDir, taskId, meta, statusLines) {
+function workerEvidence(home, stateDir, taskId, meta, statusLines) {
   if (!meta) return null; // torn down: unlink
   if (!windowAlive(meta)) return null; // dead runtime window: no worker, unlink
   const verb = lastStatusVerb(statusLines);
@@ -356,6 +407,12 @@ function workerEvidence(stateDir, taskId, meta, statusLines) {
   // branch shows an actively-running no-mistakes run-step, and that DB
   // evidence keeps the lease working through the quiet stretch.
   if (runActive) return { id: taskId, state: 'working' };
+  // Still nothing from files or the coarse runs list, but the worker may be
+  // provably working: mid-turn on a long silent step (busy pane) or in a
+  // validation the coarse list missed. Ask the home's own reconciled reader
+  // (run-step > pane, never a stale status log). Working evidence is re-asserted
+  // every run, so the lease TTL never decays mid-step.
+  if (provablyWorking(home, taskId)) return { id: taskId, state: 'working' };
   return { id: taskId, state: 'idle' }; // alive, no recent activity, no active run
 }
 
@@ -574,7 +631,7 @@ function planHome(home, owner, board, archived) {
     if (!m) continue; // alias to a task with no meta: nothing live to feed
     const card = boardCard(targetCard);
     if (!card) continue; // alias target not on the board yet (created or restored below if it is live work)
-    feedStatus(targetCard, card, workerEvidence(stateDir, taskId, m, parseStatus(stateDir, taskId)));
+    feedStatus(targetCard, card, workerEvidence(home, stateDir, taskId, m, parseStatus(stateDir, taskId)));
   }
 
   // Secondmate self-records create no card, but a card may exist for one (alias
@@ -582,7 +639,7 @@ function planHome(home, owner, board, archived) {
   for (const [id, m] of metas) {
     if (m.kind !== 'secondmate') continue;
     const cid = cardId(id);
-    feedStatus(cid, boardCard(cid), workerEvidence(stateDir, id, m, parseStatus(stateDir, id)));
+    feedStatus(cid, boardCard(cid), workerEvidence(home, stateDir, id, m, parseStatus(stateDir, id)));
   }
 
   // pending events/attrs for a card id, deduped later against board card events
@@ -630,7 +687,7 @@ function planHome(home, owner, board, archived) {
     for (const line of statusLines) addEvent(line, classifyStatusLine(line));
 
     // worker lease from evidence (re-asserted when live, unlinked when gone)
-    feedStatus(id, card, workerEvidence(stateDir, taskId, m, statusLines));
+    feedStatus(id, card, workerEvidence(home, stateDir, taskId, m, statusLines));
   }
 
   // merged Done entries -> mark the PR merged, append the level-2 pr-merged
