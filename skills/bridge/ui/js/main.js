@@ -6,6 +6,7 @@ import { renderChat, onOpenCard as chatOnOpenCard } from './chat.js';
 import { renderDetail, openDetail, closeDetail, detailOpen, closeArtifact, artifactOpen } from './detail.js';
 import { renderNotifications, onOpenCard as notifOnOpenCard } from './notify.js';
 import { renderLabelManager, renderPicker, pickerIsOpen, closeLabelPicker } from './labels.js';
+import './resize.js'; // draggable side-panel widths
 
 chatOnOpenCard(openDetail);
 notifOnOpenCard(openDetail);
