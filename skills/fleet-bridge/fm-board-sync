@@ -713,11 +713,20 @@ function planHome(home, owner, board, archived) {
 }
 
 // ---------- http ----------
+// agent: false = one connection per request (Connection: close), never the
+// Node >=19 keep-alive pool. The plan phase blocks the event loop with
+// synchronous evidence calls (no-mistakes runs, git, provablyWorking) between
+// the initial GETs and the apply writes; a pooled keep-alive socket idles past
+// the server's keepAliveTimeout during that block, the blocked loop never sees
+// the server's close, and the first apply write reuses the dead socket ->
+// "socket hang up". One-shot connections make every request independent of
+// how long planning blocks.
 function request(method, urlPath, body) {
   return new Promise((resolve, reject) => {
     const data = body == null ? null : JSON.stringify(body);
     const req = http.request(BASE + urlPath, {
       method,
+      agent: false,
       headers: data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {},
       timeout: 10000,
     }, (res) => {

@@ -157,6 +157,35 @@ test('provably-working evidence: stale files + no active run + no evidence -> id
   }
 });
 
+test('provably-working evidence: real shell-out blocking past keep-alive still applies cleanly', async () => {
+  const s = await startServer();
+  const home = fx.makeHome();
+  try {
+    fx.writeBacklog(home, { inflight: ['fix-widget-a1 - Fix widget (repo: demo-app)'] });
+    fx.writeMeta(home, 'fix-widget-a1', ['project=projects/demo-app', 'kind=ship']);
+    fx.writeStatus(home, 'fix-widget-a1', ['working: implementing']);
+    fx.backdate(path.join(home, 'state', 'fix-widget-a1.status'), 3600);
+    // a REAL bin/fm-classify-lib.sh (no FM_SYNC_PROVABLY_WORKING override): the
+    // evidence shell-out blocks the event loop past the server's 5s
+    // keepAliveTimeout, between the plan-phase GETs and the apply writes. A
+    // pooled keep-alive client socket dies during that block and its reuse made
+    // every such apply fail with "socket hang up"; one-shot connections
+    // (agent: false in request()) keep the apply independent of the block.
+    fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'bin', 'fm-classify-lib.sh'),
+      'crew_is_provably_working() { sleep 6; return 0; }\n');
+
+    const r = await fx.syncApply(s, home, { FM_SYNC_ACTIVE_BRANCHES: '' });
+    assert.strictEqual(r.code, 0, r.stderr);
+    assert.ok(!/socket hang up/.test(r.stderr), 'no socket hang up: ' + r.stderr);
+    // and the evidence itself landed: the slow-but-working reader keeps the lease
+    assert.strictEqual((await fx.getCard(s, 'fix-widget-a1')).status.worker.state, 'working');
+  } finally {
+    await s.stop();
+    fx.rmHome(home);
+  }
+});
+
 test('provably-working evidence: needs-decision still outranks a working reader', async () => {
   const s = await startServer();
   const home = fx.makeHome();
