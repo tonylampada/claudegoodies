@@ -75,13 +75,17 @@ function typingHtml(stale) {
     '<span class="tdot"></span><span class="tdot"></span><span class="tdot"></span>' +
     '<span class="lbl">agent owes you a reply…</span></div>';
 }
-function mainFeedItems() {
+function mainFeedMsgs() {
   // main-chat messages only; card threads live in their own card view
-  const items = [];
-  for (const m of (S.doc && S.doc.chat) || []) items.push({ ts: m.ts, html: msgHtml(m) });
-  items.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
-  return items;
+  const msgs = (((S.doc && S.doc.chat) || [])).slice();
+  msgs.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+  return msgs;
 }
+
+// main chat collapses older history behind one expander; expansion is
+// client-side only and resets on page load
+const COLLAPSE_KEEP = 30;
+let mainExpanded = false;
 
 // the conversation currently shown; a change means "jump to the newest message"
 let lastViewKey = null;
@@ -119,12 +123,28 @@ export function renderChat() {
   if (isCard) {
     for (const m of c.thread || []) push(m.ts, msgHtml(m));
   } else {
-    for (const it of mainFeedItems()) push(it.ts, it.html);
+    // only the newest COLLAPSE_KEEP messages render by default; older history
+    // sits behind the expander. msgHtml runs only for visible messages so the
+    // speak-button ↔ speakMsgs DOM-order mapping stays 1:1.
+    const msgs = mainFeedMsgs();
+    const hidden = mainExpanded ? 0 : Math.max(0, msgs.length - COLLAPSE_KEEP);
+    if (hidden) html += '<button class="feed-expand" type="button">show earlier messages (' + hidden + ')</button>';
+    for (const m of msgs.slice(hidden)) push(m.ts, msgHtml(m));
   }
   if (targetOwed(currentTarget())) html += typingHtml(targetOwedStale(currentTarget()));
   feedEl.innerHTML = html || '<div class="empty">no messages yet</div>';
   if (switched) scrollFeedToBottom(); // deferred: the feed may still be hidden this frame
   else if (pinned) feedEl.scrollTop = feedEl.scrollHeight;
+
+  // expander: reveal the full history, keeping the reader's place (content is
+  // inserted above, so anchor scrollTop by the height delta)
+  const expandBtn = feedEl.querySelector('.feed-expand');
+  if (expandBtn) expandBtn.onclick = () => {
+    const prevH = feedEl.scrollHeight, prevTop = feedEl.scrollTop;
+    mainExpanded = true;
+    renderChat();
+    feedEl.scrollTop = prevTop + (feedEl.scrollHeight - prevH);
+  };
 
   // wire speak buttons: .msg.agent[data-speak] in DOM order maps 1:1 to speakMsgs
   const speakBtns = feedEl.querySelectorAll('.msg.agent [data-speak]');

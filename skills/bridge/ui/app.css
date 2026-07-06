@@ -144,6 +144,11 @@ input, textarea, select { font: inherit; color: var(--text); }
 @media (hover: none) { .msg-speak { opacity: .6; } } /* touch: always visible, small */
 
 .feed-day { align-self: center; color: var(--faint); font-size: 10.5px; margin: 6px 0 2px; font-family: var(--mono); }
+.feed-expand {
+  align-self: center; color: var(--faint); font-size: 10.5px; margin: 6px 0 2px; font-family: var(--mono);
+  border: 1px solid var(--line); border-radius: 10px; padding: 3px 10px; transition: color .15s, border-color .15s;
+}
+.feed-expand:hover { color: var(--text); border-color: var(--accent2); }
 
 /* composer */
 .composer { flex: none; display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); align-items: flex-end; }
