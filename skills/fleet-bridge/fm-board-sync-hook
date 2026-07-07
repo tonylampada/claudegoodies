@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# fm-board-sync-hook — the push-triggered fast path onto the board.
+#
+# Firstmate's generic, opt-in event hook (config/event-hook; see the
+# firstmate repo's docs/configuration.md "Event hooks") fires this script on
+# a fleet-state transition (spawn, teardown, PR-state change, a status/
+# turn-end write), passing the home path as FM_EVENT_HOME. This script does
+# nothing new: it re-runs the SAME fm-board-sync sync logic the poll shim
+# (state/board-sync.check.sh, see SKILL.md "The feeder's lane") already
+# calls on a timer, just event-triggered instead of poll-triggered. The poll
+# shim stays wired as the reconciler/fallback - this is purely the fast path.
+#
+# Wire it up per home alongside the existing poll shim:
+#   printf '%s\n' '<this-dir>/fm-board-sync-hook' > <fm-home>/config/event-hook
+#
+# FM_BOARD_SYNC_BOARD/FM_BOARD_SYNC_PORT override the board name (default
+# "fleet") and server port (fm-board-sync's own default when unset); tests
+# point these at an ephemeral server instead of the real one.
+set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+[ -n "${FM_EVENT_HOME:-}" ] || exit 0
+
+args=(--home "$FM_EVENT_HOME" --apply --board "${FM_BOARD_SYNC_BOARD:-fleet}")
+[ -z "${FM_BOARD_SYNC_PORT:-}" ] || args+=(--port "$FM_BOARD_SYNC_PORT")
+
+"$SCRIPT_DIR/fm-board-sync" "${args[@]}" >/dev/null 2>&1 || true

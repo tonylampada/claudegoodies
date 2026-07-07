@@ -28,8 +28,9 @@ automated — you are the only gear that cannot be. Model:
   yourself.
 - Server startup is by captain's order only, never automatic. The order:
   **"Captain on the bridge"** (or any clear ask for the board). Then:
-  `bridge-axi open --board fleet` (idempotent, prints URL) → arm the poll and run the
-  sync → hand him the URL, nothing else. A board already running stays running.
+  `bridge-axi open --board fleet` (idempotent, prints URL) → wire the push hook, arm the
+  poll, and run the sync → hand him the URL, nothing else. A board already running stays
+  running.
 
 ## The feeder's lane — never hand-do these
 
@@ -42,7 +43,22 @@ on merge, resurrection of archived ids, type migration.
 - Board looks stale → run the sync. Never patch what the feeder owns.
 - Run it on every wake that changes fleet state:
   `fm-board-sync --home <fm-home> --apply --board fleet` (no `--apply` = print plan).
-- Zero-token freshness between wakes — silent watcher shim:
+- The fast path — push, not poll: firstmate's generic, opt-in `config/event-hook`
+  (docs/configuration.md "Event hooks" in the firstmate repo) fires on a spawn,
+  teardown, PR-state change, or status/turn-end write. Point it at this skill's
+  `fm-board-sync-hook`, which just re-runs the same sync above immediately instead of
+  waiting out a poll:
+
+  ```sh
+  # <fm-home>/config/event-hook — one line, written once per home
+  <this-skill-dir>/fm-board-sync-hook
+  ```
+
+  Wire this the same session you first run the sync for a home. It never replaces the
+  poll shim below — a consumer that misses an event (hook not yet wired, a cold board
+  server) still catches up on the next poll.
+- Zero-token freshness between wakes — silent watcher shim, the reconciler/fallback for
+  whatever the push hook misses:
 
   ```sh
   # <fm-home>/state/board-sync.check.sh — prints nothing, never wakes the agent
