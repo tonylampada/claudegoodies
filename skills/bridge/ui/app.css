@@ -272,7 +272,7 @@ body.resizing { user-select: none; cursor: col-resize; }
 .np-item:hover { background: var(--panel); }
 .np-item .em { flex: none; font-size: 14px; }
 .np-item .bd { flex: 1; min-width: 0; }
-.np-item .tx { font-size: 12.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.np-item .tx { font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
 .np-item .sub { color: var(--faint); font-size: 10.5px; margin-top: 1px; font-family: var(--mono); }
 .np-item.unread .tx { font-weight: 600; }
 .np-item .rdot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-top: 6px; }

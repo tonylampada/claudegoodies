@@ -27,7 +27,9 @@ export function openCardThread(id, opts) {
   if (!(opts && opts.silent)) {
     S.view = 'chat'; // on mobile, switch to the chat tab
     render();
-    inputEl.focus();
+    // desktop only: auto-focus the composer. On mobile, focusing raises the
+    // on-screen keyboard before the user has read the thread, so wait for a tap.
+    if (window.innerWidth > 760) inputEl.focus();
   } else {
     render();
   }
