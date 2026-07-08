@@ -92,11 +92,22 @@ site/
     built-in default map.
   - **Backend precedence** (highest first): `--backend` flag → config `backend` (only if that backend
     is actually available) → auto-detect (`edge` if present, else `say`).
-  - **`--save-voice`:** after the voice resolves, persist it into `~/.spleak2me.json` under
-    `voices[backend][lang]` (merging into any existing config, pretty-printed), then generate normally.
-    Set a preference with e.g. `node scripts/gen-audio.js <site> --voice "Zoe (Premium)" --save-voice`.
   - The startup log line notes `config: loaded`/`config: none` and appends `(from ~/.spleak2me.json)`
     after the voice when it came from config.
+
+- **Voice preference is Claude-managed — the user never touches flags or the config file.** The user
+  just talks to you; you handle the file on their behalf.
+  - **First time you generate audio for a user** (no `~/.spleak2me.json`, or it has no voice for this
+    backend/lang): after delivering, tell them plainly which voice you picked and that they can change
+    it just by asking — e.g. *"I used the **Zoe (Premium)** voice — if you'd rather a different one, just
+    tell me and I'll switch it in your config."* Keep it to one line; don't lecture about the mechanism.
+  - **When the user asks for a different voice:** resolve the exact backend voice name (for `say`,
+    `say -v '?'` lists them), then persist it and regenerate. Persist via the internal `--save-voice`
+    flag (`node scripts/gen-audio.js <site> --voice "<name>" --save-voice`) or by editing
+    `~/.spleak2me.json` directly — either is fine. Do **not** ask the user to run flags or hand-edit the
+    file themselves.
+  - Once a voice is saved, stay quiet about it on later runs — it's their default now; only mention it
+    again if they ask or you couldn't honor it.
 
 ## Scope reminders
 
