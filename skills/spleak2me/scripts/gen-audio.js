@@ -3,8 +3,9 @@
 // Generate one audio file per narrated node in a spleak2me site, in parallel,
 // using whatever TTS backend is available. Writes audio/<id>.<ext> + audio-manifest.js.
 //
-// Usage: node gen-audio.js <site-dir> [--concurrency N] [--backend edge|say] [--voice V]
+// Usage: node gen-audio.js <site-dir> [--concurrency N] [--backend edge|say] [--voice V] [--save-voice]
 //   <site-dir> must contain content.js (window.DOC). Audio goes to <site-dir>/audio/.
+//   User prefs (default backend/voice) are read from ~/.spleak2me.json; --save-voice writes back.
 
 const fs = require('fs');
 const path = require('path');
@@ -15,9 +16,30 @@ const { spawn, spawnSync } = require('child_process');
 const argv = process.argv.slice(2);
 const SITE = path.resolve(argv[0] || '.');
 function opt(name, def) { const i = argv.indexOf('--' + name); return i >= 0 ? argv[i + 1] : def; }
+function flag(name) { return argv.indexOf('--' + name) >= 0; }
 const CONCURRENCY = parseInt(opt('concurrency', '6'), 10) || 6;
 const FORCE_BACKEND = opt('backend', '');
 const FORCE_VOICE = opt('voice', '');
+const SAVE_VOICE = flag('save-voice');
+
+// ---- user prefs (~/.spleak2me.json) ----
+const CONFIG_PATH = path.join(os.homedir(), '.spleak2me.json');
+function loadConfig() {
+  if (!fs.existsSync(CONFIG_PATH)) return {};
+  try {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    return (cfg && typeof cfg === 'object') ? cfg : {};
+  } catch (e) {
+    console.error(`warning: ignoring malformed ${CONFIG_PATH} (${String(e.message || e)})`);
+    return {};
+  }
+}
+const CONFIG = loadConfig();
+const HAS_CONFIG = fs.existsSync(CONFIG_PATH);
+function configVoice(be, lang) {
+  const v = CONFIG.voices && CONFIG.voices[be] && CONFIG.voices[be][lang];
+  return (typeof v === 'string' && v) ? v : '';
+}
 
 const CONTENT = path.join(SITE, 'content.js');
 const AUDIO_DIR = path.join(SITE, 'audio');
@@ -45,14 +67,34 @@ const SAY = which('say');
 const FFMPEG = which('ffmpeg');
 const AFCONVERT = which('afconvert');
 
+function available(be) { return be === 'edge' ? !!EDGE : (be === 'say' ? !!SAY : false); }
 let backend = FORCE_BACKEND;
-if (!backend) backend = EDGE ? 'edge' : (SAY ? 'say' : null);
+if (!backend && available(CONFIG.backend)) backend = CONFIG.backend; // config default, only if available
+if (!backend) backend = EDGE ? 'edge' : (SAY ? 'say' : null);       // auto-detect
 if (!backend) { console.error('No TTS backend found (looked for edge-tts and macOS `say`). Skipping audio.'); process.exit(2); }
 
 // ---- voice maps ----
 const EDGE_VOICES = { en: 'en-US-AvaNeural', pt: 'pt-BR-FranciscaNeural', es: 'es-ES-ElviraNeural', fr: 'fr-FR-DeniseNeural', de: 'de-DE-KatjaNeural', it: 'it-IT-ElsaNeural', nl: 'nl-NL-ColetteNeural', ja: 'ja-JP-NanamiNeural', zh: 'zh-CN-XiaoxiaoNeural' };
 const SAY_VOICES = { en: 'Samantha', pt: 'Luciana', es: 'Monica', fr: 'Thomas', de: 'Anna', it: 'Alice', nl: 'Xander', ja: 'Kyoko', zh: 'Tingting' };
-const VOICE = FORCE_VOICE || (backend === 'edge' ? (EDGE_VOICES[LANG] || EDGE_VOICES.en) : (SAY_VOICES[LANG] || SAY_VOICES.en));
+const CONFIG_VOICE = configVoice(backend, LANG);
+const DEFAULT_VOICE = backend === 'edge' ? (EDGE_VOICES[LANG] || EDGE_VOICES.en) : (SAY_VOICES[LANG] || SAY_VOICES.en);
+// precedence: --voice flag > config voices[backend][lang] > built-in default
+const VOICE = FORCE_VOICE || CONFIG_VOICE || DEFAULT_VOICE;
+const VOICE_FROM_CONFIG = !FORCE_VOICE && !!CONFIG_VOICE;
+
+// ---- persist chosen voice to ~/.spleak2me.json when --save-voice ----
+if (SAVE_VOICE) {
+  const cfg = loadConfig();
+  if (!cfg.voices || typeof cfg.voices !== 'object') cfg.voices = {};
+  if (!cfg.voices[backend] || typeof cfg.voices[backend] !== 'object') cfg.voices[backend] = {};
+  cfg.voices[backend][LANG] = VOICE;
+  try {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n');
+    console.log(`saved voice=${VOICE} for backend=${backend} lang=${LANG} → ${CONFIG_PATH}`);
+  } catch (e) {
+    console.error(`warning: could not write ${CONFIG_PATH} (${String(e.message || e)})`);
+  }
+}
 
 // ---- narration cleaning (generic; author should write TTS-ready narration) ----
 function clean(s) {
@@ -122,7 +164,9 @@ async function pool(tasks, size, worker) {
 }
 
 (async () => {
-  console.log(`spleak2me audio · backend=${backend} · voice=${VOICE} · lang=${LANG} · ${items.length} clips · concurrency=${CONCURRENCY}`);
+  const voiceNote = VOICE_FROM_CONFIG ? ' (from ~/.spleak2me.json)' : '';
+  const cfgNote = HAS_CONFIG ? 'config: loaded' : 'config: none';
+  console.log(`spleak2me audio · backend=${backend} · voice=${VOICE}${voiceNote} · lang=${LANG} · ${cfgNote} · ${items.length} clips · concurrency=${CONCURRENCY}`);
   const res = await pool(items, CONCURRENCY, gen);
   const manifest = {};
   let ok = 0, fail = 0;

@@ -60,7 +60,8 @@ site/
    It auto-detects a TTS backend (`edge-tts`, else macOS `say`), picks a voice from `meta.lang`, runs
    clips **in parallel**, and rewrites `audio-manifest.js`. If no backend exists it just skips audio and
    the site stays text-only (players don't render). Flags: `--concurrency N`, `--backend edge|say`,
-   `--voice <raw>`.
+   `--voice <raw>`, `--save-voice`. User prefs (default backend/voice) come from `~/.spleak2me.json` —
+   see Audio notes.
 5. **Verify.** Open `<output-dir>/index.html` (or serve it) and sanity-check: theses render, a card
    drills in, a player plays, "got it?" ticks the progress bar. Fix `content.js` and re-run step 4 if
    audio text needed changes.
@@ -75,6 +76,27 @@ site/
   generator only strips markdown/URLs, it does not expand abbreviations.
 - Audio is driven entirely by `audio-manifest.js`: a card shows a player only if its clip was generated.
   To ship text-only, just don't run step 4.
+- **User prefs — `~/.spleak2me.json`:** an optional config in the home dir holding a preferred default
+  backend and per-backend/per-language voices. Missing or malformed file = ignored (warns to stderr,
+  never crashes), so the no-config path is unchanged. Schema:
+  ```json
+  {
+    "backend": "say",
+    "voices": {
+      "say":  { "en": "Zoe (Premium)" },
+      "edge": {}
+    }
+  }
+  ```
+  - **Voice precedence** (highest first): `--voice` flag → `voices[backend][lang]` from config →
+    built-in default map.
+  - **Backend precedence** (highest first): `--backend` flag → config `backend` (only if that backend
+    is actually available) → auto-detect (`edge` if present, else `say`).
+  - **`--save-voice`:** after the voice resolves, persist it into `~/.spleak2me.json` under
+    `voices[backend][lang]` (merging into any existing config, pretty-printed), then generate normally.
+    Set a preference with e.g. `node scripts/gen-audio.js <site> --voice "Zoe (Premium)" --save-voice`.
+  - The startup log line notes `config: loaded`/`config: none` and appends `(from ~/.spleak2me.json)`
+    after the voice when it came from config.
 
 ## Scope reminders
 
