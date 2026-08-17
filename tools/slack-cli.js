@@ -89,6 +89,18 @@ async function findChannelIdByName(name) {
   return null;
 }
 
+// Attachments are invisible in the text body — a chart posted as an image reads
+// as an empty message. Surface name + id so `slack-cli file <id>` can fetch it.
+function formatFiles(msg) {
+  let out = '';
+  for (const f of msg.files || []) {
+    if (f.mode === 'tombstone') continue;
+    const kb = f.size ? ` ${Math.round(f.size / 1024)}KB` : '';
+    out += `\n    \u{1F4CE} ${f.name || f.title || 'file'} [${f.filetype || f.mimetype || '?'}${kb}] ${f.id}`;
+  }
+  return out;
+}
+
 async function formatMessage(msg, channelId, resolveNames = true, threadTs = null) {
   let author = msg.user || msg.username || 'unknown';
   if (resolveNames && msg.user) {
@@ -100,7 +112,9 @@ async function formatMessage(msg, channelId, resolveNames = true, threadTs = nul
   const text = (msg.text || '').replace(/\n/g, ' ');
 
   let output = `[${ts}] @${author}${threadInfo}: ${text}`;
-  
+
+  output += formatFiles(msg);
+
   if (showLinks && channelId) {
     const link = makePermalink(channelId, msg.ts, threadTs);
     output += `\n    🔗 ${link}`;
@@ -314,7 +328,9 @@ async function main() {
         const text = (msg.text || '').replace(/\n/g, ' ');
 
         let output = `[${ts}] @${author}${threadInfo}: ${text}`;
-        
+
+        output += formatFiles(msg);
+
         // Link para todas as mensagens quando --links
         if (showLinks) {
           const link = makePermalink(channelId, msg.ts, threadTs);
@@ -739,6 +755,50 @@ async function main() {
       break;
     }
 
+    case 'files': {
+      const channelId = args[1];
+      const ts = args[2];
+      if (!channelId || !ts) return die('Usage: slack-cli files <channel_id> <ts>\n\nLists attachments on a message and every reply in its thread.');
+      const res = await slack('conversations.replies', { channel: channelId, ts, limit: 200 });
+      if (!res.ok) return die('Error:', res.error);
+      let n = 0;
+      for (const msg of res.messages || []) {
+        for (const f of msg.files || []) {
+          if (f.mode === 'tombstone') continue;
+          n++;
+          console.log(`${f.id}\t${f.name || f.title}\t[${f.filetype || f.mimetype}]\t${Math.round((f.size || 0) / 1024)}KB\tmsg ${msg.ts}`);
+        }
+      }
+      if (!n) console.log('no attachments on that message or its thread');
+      break;
+    }
+
+    case 'file': {
+      const fileId = args[1];
+      if (!fileId) return die('Usage: slack-cli file <file_id> [--out <path>]\n\nDownloads an attachment and prints the local path.\nTip: `slack-cli files <channel> <ts>` lists the ids.');
+      const info = await slack('files.info', { file: fileId });
+      if (!info.ok) return die('Error:', info.error);
+      const f = info.file;
+      const url = f.url_private_download || f.url_private;
+      if (!url) return die('Error: file has no downloadable url');
+      const outIdx = args.indexOf('--out');
+      const out = outIdx > -1 && args[outIdx + 1]
+        ? args[outIdx + 1]
+        : `/tmp/slack-${fileId}-${(f.name || 'file').replace(/[^\w.\-]/g, '_')}`;
+      const res = await fetch(url, { headers: { 'Authorization': `Bearer ${SLACK_XOXP_TOKEN}` } });
+      if (!res.ok) return die(`Error: HTTP ${res.status} fetching the file`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      // An unauthorized download returns Slack's login page with status 200.
+      if (buf.subarray(0, 200).toString('utf8').trimStart().toLowerCase().startsWith('<!doctype html')) {
+        return die('Error: got an HTML login page instead of the file — the token is missing files:read.');
+      }
+      const { writeFileSync } = await import('fs');
+      writeFileSync(out, buf);
+      console.log(out);
+      console.error(`  ${f.name}  ${f.mimetype}  ${buf.length} bytes`);
+      break;
+    }
+
     default:
       console.log(`slack-cli - Slack CLI
 
@@ -756,6 +816,8 @@ Commands:
   send <channel_id|#channel_name> <message> [--links] Send message with [BOT_NAME] prefix
   send-rich <channel_id|#channel_name> <file> [--links] Send file as rich text (native bullets)
   reactions [--emoji EMOJI] [--limit N] [--links]  List messages you reacted to (default: bookmark)
+  files <channel_id> <ts>               List attachments on a message and its thread
+  file <file_id> [--out <path>]         Download an attachment, print the local path
 
 Options:
   --links    Show permalink for each message
