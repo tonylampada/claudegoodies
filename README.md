@@ -30,3 +30,8 @@ Extract Avoma meeting UUIDs from Avoma notification/forwarded emails so `avoma-c
 
 ### 📬 [AgentMail Avoma meeting IDs](./tools/agentmail-avoma-meeting-ids.md)
 Scan recent AgentMail messages and extract Avoma meeting UUIDs.
+
+## Architecture guidance
+
+### [Architecture guidelines manifesto](./architecture-guidelines)
+Input for a Wayfinder conversation that derives project- and stack-specific architecture rules to keep vibecoding from degrading a codebase.
