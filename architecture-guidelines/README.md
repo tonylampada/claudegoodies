@@ -1,113 +1,127 @@
 # Architecture guidelines manifesto
 
-Use this document as input to a Wayfinder conversation that produces **project- and stack-specific architectural guidelines**. Its purpose is to minimize the chance that successive rounds of vibecoding turn a codebase into a mess.
+This document guides the creation of **project- and stack-specific architectural guidelines**, through a conversation with Wayfinder. Its purpose is to minimize the chance that successive rounds of vibecoding turn a codebase into a mess.
 
-The conversation must turn these principles into decisions about the actual application: where knowledge belongs, which boundaries matter, how parts communicate, and which constraints agents must follow as the software grows. This document supplies the architectural intent. The resulting project guidelines supply the concrete rules.
+It captures a way of thinking about architecture. Wayfinder should use that reasoning to question the project's design, surface choices, and help the user settle concrete rules. Those rules will differ between projects because their domains, technologies, constraints, and ambitions differ.
 
-These principles grew out of Golem's architecture discussions. They apply to ordinary applications too. Using Golem, embedding an agent, adopting TypeScript, or building a reusable framework is optional.
+The problem is cumulative. A coding agent can make a feature work while putting its knowledge in the wrong place. The next agent follows the precedent. Over time, business rules spread through handlers and screens, integrations acquire special cases, and changing one concept requires finding all its accidental representations. Each change may look reasonable on its own. Together they make the software harder to understand and change.
 
-## 1. Put knowledge in its proper home
+We want to shape how the application can grow. That requires agreement about where knowledge belongs and how parts communicate, with enough reasoning behind the agreement that future agents can apply it to situations nobody anticipated.
 
-Software represents knowledge. Before deciding where to put code, identify the knowledge it expresses and who owns it.
+## Code represents knowledge
 
-Apply this question at each scale: shared library versus application, module versus module, then files and functions. A module's business rules belong with that module. Application-specific knowledge belongs in the application; a reusable library must remain independent of its consumers' particular businesses.
+An application contains knowledge about its business: what an order means, when it may be cancelled, how a price is calculated. It also contains knowledge about mechanisms: how to talk to a database, decode a request, render a table, or report an error. Writing code gives that knowledge an executable representation.
 
-Apply DRY to knowledge. Two implementations of the same business rule can drift even when their code looks different. Conversely, similar code can represent different rules that should evolve independently. Decide ownership before extracting a shared abstraction.
+Architecture begins by asking where each kind of knowledge belongs. A team needs a map of those homes. Without one, “put this in the appropriate module” leaves the most consequential part of the instruction unresolved.
 
-Generic knowledge can take the form of code, configuration, documentation, prompts, or skills. Give it an authoritative home in whichever form fits. Refer consumers to that home so fixes can reach them without maintaining scattered copies.
+Consider a cancellation deadline. If the interface hides a button after that deadline, an endpoint checks it again, and a scheduled process implements its own version, several places now claim to know the same business rule. A change to the deadline becomes a search for copies. Even if the implementations share no identical lines, the knowledge is duplicated.
 
-**Derive for the project:** a knowledge-ownership map, dependency directions, and examples of knowledge that belongs on each side of the important boundaries. Identify who owns each shared rule.
+This is why DRY requires more thought than finding similar code. To avoid repeating knowledge, first identify its proper home. The interface can display a decision and the endpoint can enforce it while both rely on the same authoritative rule. Conversely, two calculations that happen to look alike may belong to different business concepts. Combining them can create a dependency between decisions that should evolve independently.
 
-## 2. Design the seams with the user
+The ownership question repeats at different scales. Between a reusable library and an application, distinguish generic knowledge from application-specific knowledge. Within the application, identify which module owns a business concept. Within that module, make the same judgment about files and functions. A clean package diagram does little good if the functions inside it still know each other's business.
 
-Interfaces are architectural decisions: the contracts through which parts of a system communicate. Give their shape deliberate attention. Keep them small, meaningful, and documented as first-class artifacts.
+Shared infrastructure must remain independent of a particular consumer's domain. A library that needs exceptions for named customers or particular application workflows has absorbed knowledge that belongs elsewhere. At the other extreme, an application that repeatedly reimplements shared error handling or integration conventions has no reliable way to receive improvements to that generic knowledge.
 
-Involve the user when defining or changing significant contracts. Explain what a part does, what information it needs, what it returns, and what promises its callers can rely on. Use domain language and concrete interactions so participation does not require reading implementation code.
+Knowledge also lives in documentation, prompts, skills, and configuration. An agent may need both a library's implementation and guidance about using it. Those are legitimate parts of the architecture. Give shared guidance an authoritative home, and let projects reference it. Copying a large body of generic instructions into each project creates another set of implementations that can drift.
 
-A conceptual API document, domain model, or application “DNA” can support this conversation. Its value comes from helping the user shape those contracts. Completing a template alone does not achieve that.
+In the project conversation, draw this map using actual concepts. Naming folders “domain,” “services,” and “utils” is insufficient: explain what each is allowed to know, what it must obtain from another part, and who owns a rule when several callers need it.
 
-**Derive for the project:** the important interfaces, their owners, their documentation, and the changes that require a design conversation. Distinguish contract changes from implementation work agents can perform within an agreed contract.
+## Design the seams intentionally, with the user
 
-## 3. Separate plumbing from intelligence
+A system consists of parts that communicate. Their interfaces determine what each part can ask of another, what assumptions callers may make, and how much of an implementation can change without affecting its neighbors.
 
-Plumbing connects things: accepting requests, translating formats, invoking dependencies, and moving data. Intelligence decides what the application means and does: business rules, calculations, policies, and allowed transitions.
+An interface deserves design attention in its own right. Treat it as a first-class part of the documentation, with a meaningful vocabulary, a small understandable shape, and explicit behavior. A reader should be able to learn the contract without reconstructing it from whichever caller happens to use it today.
 
-Keep business behavior understandable without tracing transport and database-client mechanics. Give expected business outcomes explicit representation; handle unexpected failures consistently at the appropriate execution boundary. A domain-specific permission rule remains business knowledge even when generic authentication happens at an entry point.
+The danger in agent-driven development is that an agent can invent both sides of an interface in a single pass. Nothing forces the human to notice the decision. The feature works, but the agent has also chosen how the system divides responsibility. Repeat that often enough and the architecture reflects a succession of local conveniences.
 
-This distinction is independent of generic versus specific knowledge. An application has plumbing of its own; a reusable framework can contain decision logic.
+Bring the user into those decisions. Show the significant seams and explain what they mean. For example, an operation named “cancel order” raises useful questions: when is cancellation allowed, what happens to a payment, and what result should the caller expect if fulfillment has started? Those are questions the person who understands the business can answer. An operation that merely exposes an internal status field can conceal all of them.
 
-For backend code, use this separation to decide responsibilities and dependencies. For frontend code, investigate the responsibilities that need separation in that project. The backend distinction does not establish a universal frontend layering scheme.
+Participation needs to fit the user's understanding. Discuss concepts, examples, inputs, outcomes, and promises. A non-programmer can help design the conceptual API without choosing serialization syntax or reading type definitions. A technical user may want to inspect the exact interface shape. Both should have visibility into decisions that change what the parts mean to one another.
 
-**Derive for the project:** where request handling, business decisions, integration code, and error translation live. Walk through one operation and show which part owns each decision. Choose the necessary boundaries before choosing a layer count or folder tree.
+A domain document or conceptual API description gives that conversation somewhere to live. Its purpose is to make the design visible and editable. Following a document template does not establish that the user understood or helped shape the boundaries.
 
-## 4. Keep implementations behind deliberate contracts
+This practice continues as the application grows. When a feature requires changing an important contract, surface the change and its implications. Implementation within an agreed contract can proceed with less discussion. The project guidelines should help future agents recognize that distinction, so the user participates where judgment matters without approving every helper function.
 
-When the application needs alternative implementations of a capability, isolate their differences behind an interface callers can use without knowing the selected provider. Choose and wire the implementation in a defined place. Avoid distributing provider-selection branches throughout the application.
+## Separate plumbing from intelligence
 
-Favor composition at integration boundaries. For persistence, let an adapter save and retrieve ordinary domain values, rather than requiring those values to inherit storage behavior or know their database client. This keeps the domain's knowledge separate from storage mechanics.
+In backend code, distinguish the work of connecting things from the work of making decisions.
 
-Allow an explicit escape hatch when a real requirement needs provider-specific behavior. Keep that access at the integration boundary, and document the resulting dependency. An abstraction need not pretend all providers have identical capabilities.
+Plumbing receives a request, decodes its representation, obtains dependencies, moves data, and translates a result for the caller. Intelligence expresses the application's rules: whether a transition is allowed, how a value is calculated, what a workflow should do next.
 
-**Derive for the project:** which dependencies warrant adapters, the minimum contracts callers need, where implementations are selected, and where native capabilities may be used. Existing framework mechanisms may already provide the required separation.
+Take the cancellation example. Parsing an order identifier from a request is plumbing. Deciding whether an order can still be cancelled is intelligence. Reading the order through a database client is plumbing. Deciding whether cancellation creates a refund is intelligence. Formatting the response returns to plumbing.
 
-## 5. Constrain growth without prescribing everything
+When all of that lives together, answering a business question requires navigating transport and storage details. Reusing the behavior from a different entry point becomes awkward: a command-line task or another operation either calls through an irrelevant transport or copies the rule. Testing the decision can require machinery that has little to do with the decision itself.
 
-Architecture guidelines should restrict the ways a system can become disordered. For each restriction, name the failure it prevents and the freedom it removes. Keep restrictions whose benefit justifies that cost.
+Give business behavior a home where its inputs, decisions, and outcomes remain recognizable. Let integrations handle their mechanisms through deliberate boundaries. Then changing a transport or storage detail need not become a rewrite of business behavior, and changing a business rule need not require understanding the database client's conventions.
 
-Choose recognizable defaults that agents can follow without inventing a new structure for each feature. Let the user and agent adapt those defaults when a project's needs justify it, recording the reason and the replacement rule.
+Apply the distinction to failures too. “This order can no longer be cancelled” is an expected business outcome that deserves a defined meaning. A connection failure is a different kind of event, requiring consistent handling at the appropriate execution boundary. An authentication mechanism and a business rule about who may cancel a particular order also answer different questions, even though both concern access.
 
-Avoid making folder layouts, layer counts, package boundaries, or coding style universal requirements. Start with clear internal responsibilities; split packages when actual consumers or operational needs justify the split.
+Generic versus specific knowledge is a separate distinction. An application has its own plumbing, and a reusable component can contain substantial decision logic. Use both questions: whose knowledge is this, and what responsibility does this code perform?
 
-Build capabilities needed by the current application. Keep plausible future changes in mind when choosing boundaries, without implementing their machinery in advance. Use the first real workflows to discover what the design missed.
+The project and stack determine how to express the separation. Existing framework facilities may already supply useful boundaries. Decide what must remain independent before prescribing a layer count, class hierarchy, or folder tree. For frontend architecture, investigate its responsibilities on their own terms; this backend model does not settle a universal frontend structure.
 
-**Derive for the project:** a short set of constraints, their rationale, and an exception process. Evaluate them against concrete feature changes: what must an agent understand and edit, and why?
+## Let contracts contain implementation differences
 
-## 6. Encode mechanical rules in tools
+A well-chosen boundary gives callers a useful capability without making them carry the details of its implementation. If several implementations must serve the same capability, callers should not need provider-specific branches scattered through their code. Choose the implementation in a defined place and let it satisfy the agreed contract.
 
-Use deterministic scaffolding and commands for repeatable setup. Express architectural restrictions as dependency or lint checks where practical: for example, limiting database-driver imports to the persistence integration.
+Persistence illustrates the ownership issue. A domain record can represent a value the application understands, while a persistence adapter knows how to save it. Putting a database-specific `save` method on the record ties those responsibilities together. Favor composition: give the record to the part that knows persistence. The domain value can then travel between parts of the application without dragging storage mechanics along with it.
 
-Use documentation for decisions that require judgment. Supply defaults through shared configuration when several projects should receive the same improvements. Keep agent entry instructions short, with clear pointers that say when to read deeper guidance.
+The same reasoning applies to other integrations, but it does not justify wrapping every library or designing a universal provider system in advance. Identify the knowledge that callers should not need, and the changes the boundary should contain. Sometimes an existing library interface already does the job.
 
-Architecture checks can be adapted through an intentional project decision. Access-control enforcement has a different purpose and needs its own policy; disabling an architectural lint rule does not grant runtime permissions.
+Useful abstractions also need to acknowledge their limits. A storage engine may have a native query facility the application has a good reason to use. An explicit escape hatch at the persistence boundary can support that need while keeping the dependency visible. Scattering native calls across the application would lose that ownership; forcing an elaborate universal query language on the project could cost more than it solves.
 
-**Derive for the project:** the rule, the check that enforces it, and an actionable violation message. For rules that cannot be automated, give an example agents can use during implementation and review.
+Keep contracts meaningful and small enough to understand. Preserve useful capabilities without pretending that every implementation is interchangeable in every respect. The project conversation should settle which guarantees are shared and where a deliberate dependency on a particular implementation is acceptable.
 
-## 7. Choose technology for the actual operating context
+## Engineer constraints that leave room to discover
 
-Choose storage, dependencies, and deployment mechanisms from the application's users, workload, data, and operating environment. The word “production” does not settle those choices.
+These guidelines are a form of constraint engineering. We choose restrictions on where knowledge can live and how dependencies can form because unrestricted local choices tend to produce disorder over time.
 
-Files can be appropriate for a small application. A database can be necessary for another. Keeping data in Git can make sense in a suitable context. Discuss concurrency, access, recovery, and operational needs before deciding.
+Restrictions have a cost. A rule can prevent accidental coupling while also making a legitimate feature harder to express. Too little structure leaves each agent to invent its own architecture. Too much structure forces the application to fit decisions made before anyone understood its particular needs.
 
-Reuse suitable libraries for generic work. Keep the application-specific rules recognizable as dependencies change. For shared packages, prefer compatible evolution while permitting deliberate breaking changes with migration documentation. Consumers should be able to choose when to upgrade and understand what must change.
+For each proposed constraint, explain the failure it prevents and the freedom it removes. “Database clients belong behind the persistence boundary” has a reason grounded in knowledge ownership. “Every application must have these seven folders” needs a separate argument. Familiarity with a structure is not enough to make it the right structure here.
 
-**Derive for the project:** the reasons for the chosen technologies, known operating limits, and the conditions that would justify revisiting them. Document those conditions without building a speculative migration system.
+Defaults still matter. A recognizable approach reduces the number of decisions an agent must invent and helps a person move between projects. Choose an opinionated default, then allow the user and agent to recognize when it no longer fits. A deliberate exception should leave behind a comprehensible replacement decision, rather than an unexplained special case future agents will copy.
 
-## When the application includes agents
+Planning helps expose uncertainty, but use reveals gaps that a planning conversation will miss. Build the capabilities the application needs now. Let real features test whether the boundaries hold. A possible future deployment model may be worth considering when choosing a seam, without warranting implementation of that deployment model today.
 
-These are conditional design directions. An ordinary web application need not add an agent to satisfy this manifesto.
+Package boundaries deserve the same restraint. Several responsibilities can live in one package with low coupling. Separate packages become useful when actual consumers or operational needs justify them. More repositories and layers do not establish better knowledge ownership by themselves.
 
-- **Shared operations:** put reusable application actions behind documented operation contracts. Let UI and agent callers use the same behavior and authorization rules, including record-level checks. Keep that behavior outside presentation components.
-- **View control:** distinguish changing application state from steering one user's view. Expose meaningful view actions through a small discoverable interface; expand it as interactions require. Decide how the agent obtains permission to steer that user's view.
-- **Execution ownership:** for work that must outlive a browser connection, keep execution and authoritative state on the backend. Reconnection should recover the view of that work. When failure leaves execution uncertain, preserve available state, show the interruption, and obtain a continuation decision instead of silently replaying actions.
-- **Permission context:** define how an agent acts on behalf of a user and how the system enforces that user's applicable limits. If construction capabilities exist, distinguish permission to build from explicit activation, and make the active mode visible.
+Judge the result through change. Pick a concrete new behavior and ask what an agent would have to understand and edit. If one business decision requires coordinated changes in unrelated places, examine where its knowledge has spread. If a small feature requires navigating a forest of abstractions, examine whether the restrictions are earning their cost. Use that evidence to improve the affected design without turning each feature into an unrelated cleanup campaign.
 
-For each adopted direction, Wayfinder must settle the concrete contract and verify the behavior through the relevant user path. A list of capabilities is not an implementation plan.
+## Put repeatable knowledge into tools
 
-## Use with Wayfinder
+An architectural rule that exists only in prose depends on each future agent noticing it, interpreting it, and remembering it at the right moment. When a rule is mechanical, encode it in the tools the project already uses.
 
-Start the conversation with this request:
+Dependency checks are a useful example. If only persistence adapters should import a database driver, a lint rule can catch violations where they occur. The diagnostic should name the violated boundary and point to the intended approach. Deterministic scaffolding can establish the same conventions at project creation; shared configuration can distribute improvements without copying instructions everywhere.
 
-> Use this manifesto to help me derive architectural guidelines for this project and stack. First understand the application, its existing code if any, its users, and its operating constraints. Ask questions that resolve consequential design choices. Keep my participation focused on knowledge ownership and the contracts between parts. Distinguish agreed decisions from proposals and unresolved questions. Produce a compact guide future coding agents can apply, with concrete boundaries, examples, and checks. Preserve implementation freedom where a restriction has no demonstrated purpose.
+Keep the reasoning in documentation even when tooling enforces the restriction. An agent still needs to understand why the boundary exists when a new requirement puts pressure on it. Tools can detect an import; they cannot decide whether the architecture should change.
 
-The resulting guide should answer:
+Use documentation for the decisions that require judgment, with examples from the actual project. Keep always-loaded agent instructions short and give them explicit pointers to the deeper material needed for particular tasks. The goal is for the agent to reach the relevant reasoning when making the decision, rather than carry an architecture textbook through every edit.
 
-1. Which knowledge belongs where, and which dependencies may cross each boundary?
-2. Which contracts matter, where are they documented, and when must changes involve the user?
-3. How does a representative feature pass through the chosen architecture?
-4. Which rules do tools enforce, and which require judgment? What does a violation look like?
-5. Which defaults may be adapted, and how is the new decision recorded?
-6. Which questions remain open, and which conditions would justify revisiting a decision?
+Start with ordinary lint checks and useful guidance. Add enforcement machinery only for a concrete problem those mechanisms cannot address. The user and agent may deliberately adapt architectural checks as the design evolves; document the changed decision so the tooling and guidance continue to agree.
 
-Record decisions as the conversation reaches them. Keep speculative choices marked as proposals. Test the guide against a real feature and a plausible change before calling it usable: an agent should be able to identify where the change belongs without inventing the architecture again.
+## Choose technology from the application's reality
 
-Maintain one authoritative project guide, with short entry-point pointers and linked detail where needed. Update it when the architecture changes so future agents inherit the current decisions.
+Architectural judgment includes knowing which problems the application actually has. Labels such as “production,” “enterprise,” or “best practice” leave that question unanswered.
+
+A small application with limited data and a simple operating model may reasonably use files for persistence. Versioning suitable data in Git may be useful. Another application may need database transactions, concurrent writers, or operational facilities that make a database the simpler choice. Discuss the users, data, access, volume, concurrency, and recovery needs that distinguish those cases.
+
+Choose mechanisms against those conditions. Reuse libraries that handle generic work well. Preserve clear ownership and contracts regardless of whether the chosen implementation looks fashionable or modest.
+
+Pragmatism also applies to evolution. A shared component should aim for compatible changes, but a permanent ban on breaking changes can prevent useful improvement. When a break is justified, document what consumers must change and let them upgrade deliberately. The practical test is whether a future agent can use those instructions to complete the upgrade without rediscovering the design from scratch.
+
+Record the limits of the current choice and the circumstances that would justify revisiting it. That gives future agents a reason to change direction when the situation changes, while avoiding infrastructure built for hypothetical demands.
+
+## Turn this thinking into project guidelines with Wayfinder
+
+Use the manifesto to drive a conversation about a particular project. Begin with the application and its domain, the existing code if there is any, the chosen stack, and the operating constraints. Work through concrete behaviors to discover consequential choices. Keep proposals, agreed decisions, and unresolved questions distinguishable, and record decisions as the conversation reaches them.
+
+A starting prompt:
+
+> Help me derive architectural guidelines for this project using this manifesto. Ask questions that expose where knowledge belongs and how the parts should communicate. Involve me in designing the important contracts. Explain the reasoning and tradeoffs behind proposed restrictions, using examples from this application. Account for the stack's existing conventions and mechanisms. Produce project-specific guidance future coding agents can apply, preserving implementation freedom where a restriction has no useful purpose.
+
+The resulting guide needs more than a repetition of these principles. It should name the project's concepts and their owners, identify dependency directions, and show a representative operation passing through the actual architecture. Document significant contracts and explain when changing them requires another design conversation. Include examples of misplaced knowledge and the correct home for it, plus executable checks where they fit.
+
+Keep enough rationale that a future agent can reason about an unfamiliar case. A bare rule invites either blind compliance or casual dismissal. A rule tied to the failure it prevents helps the agent recognize when to follow it, when to question it, and what must remain true if it changes.
+
+Before considering the guide usable, apply it to a real feature and a plausible subsequent change. The agent should be able to explain where the new knowledge belongs and which contracts it affects. Revise the guide where that exercise exposes ambiguity. Maintain it as decisions evolve, so future work starts from the architecture the project has chosen.
